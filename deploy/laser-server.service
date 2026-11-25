@@ -1,0 +1,18 @@
+[Unit]
+Description=Laser engraver web server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=__USER__
+Group=__USER__
+SupplementaryGroups=dialout video
+WorkingDirectory=__DIR__
+EnvironmentFile=/etc/laser-server.env
+Environment=LASER_JOBS_DIR=__HOME__/laser-jobs
+ExecStart=__DIR__/.venv/bin/python -m laser_server
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

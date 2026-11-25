@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "laser-server"
+version = "0.1.0"
+description = "Web UI for a GRBL laser engraver with a USB camera, for Raspberry Pi"
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = [
+    "fastapi>=0.110",
+    "uvicorn>=0.27",
+    "pyserial>=3.5",
+    "python-multipart>=0.0.9",
+]
+
+[project.optional-dependencies]
+camera = ["opencv-python-headless>=4.8"]
+dev = ["pytest>=8", "httpx>=0.27"]
+
+[project.scripts]
+laser-server = "laser_server.__main__:main"
+
+[tool.setuptools.packages.find]
+include = ["laser_server*"]
+
+[tool.setuptools.package-data]
+laser_server = ["static/*"]

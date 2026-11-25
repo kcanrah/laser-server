@@ -1,0 +1,99 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Laser Server</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <header>
+    <h1>Laser Server</h1>
+    <div id="conn" class="pill">…</div>
+    <div id="state" class="pill">…</div>
+    <button id="btn-reset" class="danger big" title="Soft reset: stops everything and turns the laser off">STOP</button>
+  </header>
+
+  <main>
+    <section class="camera card">
+      <div class="card-head">
+        <h2>Camera</h2>
+        <a href="/camera/snapshot.jpg" target="_blank" class="small">Snapshot</a>
+      </div>
+      <div class="cam-wrap">
+        <img id="cam" alt="Camera stream">
+        <div id="cam-msg" class="cam-msg hidden"></div>
+      </div>
+    </section>
+
+    <section class="card status">
+      <h2>Position</h2>
+      <table>
+        <tr><th></th><th>X</th><th>Y</th><th>Z</th></tr>
+        <tr><td>Work</td><td id="wx">–</td><td id="wy">–</td><td id="wz">–</td></tr>
+        <tr class="dim"><td>Machine</td><td id="mx">–</td><td id="my">–</td><td id="mz">–</td></tr>
+      </table>
+      <div class="row small dim"><span>Feed <b id="feed">0</b></span><span>Power <b id="power">0</b></span><span id="version"></span></div>
+      <div id="alarm" class="alert hidden"></div>
+    </section>
+
+    <section class="card jog">
+      <h2>Jog</h2>
+      <div class="jog-grid">
+        <button data-jog="-1,1">↖</button><button data-jog="0,1">Y+</button><button data-jog="1,1">↗</button>
+        <button data-jog="-1,0">X−</button><button id="btn-goto-origin" title="Go to work origin">⌂0</button><button data-jog="1,0">X+</button>
+        <button data-jog="-1,-1">↙</button><button data-jog="0,-1">Y−</button><button data-jog="1,-1">↘</button>
+      </div>
+      <div class="row">
+        <label>Step
+          <select id="step">
+            <option>0.1</option><option>1</option><option selected>10</option><option>50</option><option>100</option>
+          </select> mm
+        </label>
+        <label>Speed <input id="jogfeed" type="number" value="3000" min="1" step="100"> mm/min</label>
+      </div>
+      <div class="row buttons">
+        <button id="btn-home">Home</button>
+        <button id="btn-unlock">Unlock</button>
+        <button id="btn-set-origin">Set origin here</button>
+      </div>
+    </section>
+
+    <section class="card job">
+      <h2>Job</h2>
+      <div id="job-name" class="dim">No job running</div>
+      <div class="progress"><div id="job-bar"></div></div>
+      <div class="row small"><span id="job-lines"></span><span id="job-time"></span></div>
+      <div class="row buttons">
+        <button id="btn-pause">Pause</button>
+        <button id="btn-resume">Resume</button>
+        <button id="btn-stop" class="danger">Stop job</button>
+      </div>
+      <div id="job-result" class="small"></div>
+    </section>
+
+    <section class="card files">
+      <div class="card-head">
+        <h2>Files</h2>
+        <label class="upload button">Upload G-code
+          <input id="upload" type="file" accept=".gcode,.gc,.nc,.ngc,.g,.txt" hidden>
+        </label>
+      </div>
+      <div id="upload-status" class="small dim"></div>
+      <table id="files"><tbody></tbody></table>
+    </section>
+
+    <section class="card console">
+      <h2>Machine log</h2>
+      <div id="log"></div>
+      <form id="cmd-form" class="row">
+        <input id="cmd" placeholder="Send command (e.g. $$, $I, G0 X10)" autocomplete="off">
+        <button type="submit">Send</button>
+      </form>
+    </section>
+  </main>
+
+  <div id="toast" class="toast hidden"></div>
+  <script src="/static/app.js"></script>
+</body>
+</html>
