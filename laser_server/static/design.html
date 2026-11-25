@@ -1,0 +1,101 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Design – Laser Server</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="/static/style.css">
+  <link rel="stylesheet" href="/static/design.css">
+</head>
+<body class="design-page">
+  <header>
+    <h1>Laser Server</h1>
+    <nav><a href="/">Control</a><a href="/design" class="active">Design</a></nav>
+    <input id="design-name" class="name-input" value="untitled" title="Design name" spellcheck="false">
+    <div class="spacer"></div>
+    <button id="btn-new">New</button>
+    <button id="btn-open">Open…</button>
+    <button id="btn-save">Save</button>
+    <label class="button">Import SVG<input id="import-svg" type="file" accept=".svg,image/svg+xml" hidden></label>
+    <button id="btn-preview" title="Show the actual laser paths">Preview</button>
+    <button id="btn-send" class="primary" title="Generate G-code and add it to the job list">Make G-code</button>
+  </header>
+
+  <div class="design-layout">
+    <div class="toolbar">
+      <button data-tool="select" title="Select / move (V)">⬚<span>Select</span></button>
+      <button data-tool="rect" title="Rectangle (R)">▭<span>Rect</span></button>
+      <button data-tool="ellipse" title="Ellipse (E)">◯<span>Ellipse</span></button>
+      <button data-tool="line" title="Line (L)">╱<span>Line</span></button>
+      <button data-tool="text" title="Text (T)">T<span>Text</span></button>
+      <div class="sep"></div>
+      <button id="btn-undo" title="Undo (Ctrl+Z)">↶<span>Undo</span></button>
+      <button id="btn-redo" title="Redo (Ctrl+Shift+Z)">↷<span>Redo</span></button>
+      <button id="btn-fit" title="Fit bed in view">⤢<span>Fit</span></button>
+    </div>
+
+    <div class="stage-wrap">
+      <svg id="stage" xmlns="http://www.w3.org/2000/svg">
+        <g id="world">
+          <rect id="bed" x="0" y="0"></rect>
+          <g id="grid"></g>
+          <g id="objects"></g>
+          <g id="toolpaths"></g>
+          <g id="overlay"></g>
+        </g>
+      </svg>
+      <div id="coords" class="coords"></div>
+      <div id="stats" class="stats hidden"></div>
+    </div>
+
+    <aside class="side">
+      <section class="panel">
+        <div class="panel-head"><h2>Layers</h2><button id="btn-add-layer" class="small-btn">+ Layer</button></div>
+        <div id="layers"></div>
+        <div id="machine-note" class="small dim"></div>
+      </section>
+
+      <section class="panel" id="props-panel">
+        <h2>Object</h2>
+        <div id="no-selection" class="dim small">Select an object, or pick a tool and drag on the bed.</div>
+        <div id="props" class="hidden">
+          <label class="full">Layer <select id="p-layer"></select></label>
+          <div class="grid2">
+            <label>X <input id="p-x" type="number" step="0.1"></label>
+            <label>Y <input id="p-y" type="number" step="0.1"></label>
+            <label>W <input id="p-w" type="number" step="0.1" min="0"></label>
+            <label>H <input id="p-h" type="number" step="0.1" min="0"></label>
+            <label>Rotate° <input id="p-rot" type="number" step="1"></label>
+            <label class="check"><input id="p-lock" type="checkbox" checked> Lock ratio</label>
+          </div>
+          <div id="text-props" class="hidden">
+            <label class="full">Text <textarea id="p-text" rows="2"></textarea></label>
+            <label class="full">Font <select id="p-font"></select></label>
+            <div class="grid2">
+              <label>Size mm <input id="p-size" type="number" step="0.5" min="0.5"></label>
+              <label>Align
+                <select id="p-align"><option value="left">Left</option><option value="center">Center</option><option value="right">Right</option></select>
+              </label>
+            </div>
+          </div>
+          <div class="row buttons">
+            <button id="btn-center" title="Center on the bed">Center</button>
+            <button id="btn-dup" title="Duplicate (Ctrl+D)">Duplicate</button>
+            <button id="btn-del" class="danger" title="Delete (Del)">Delete</button>
+          </div>
+        </div>
+      </section>
+    </aside>
+  </div>
+
+  <dialog id="open-dialog">
+    <h2>Open design</h2>
+    <table id="design-list"><tbody></tbody></table>
+    <div class="row"><button id="btn-close-open">Close</button></div>
+  </dialog>
+
+  <div id="toast" class="toast hidden"></div>
+  <script src="/static/design.js"></script>
+</body>
+</html>

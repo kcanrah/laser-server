@@ -10,7 +10,11 @@ header {
   display: flex; align-items: center; gap: 12px; padding: 10px 16px;
   border-bottom: 1px solid var(--line); position: sticky; top: 0; background: var(--bg); z-index: 5;
 }
-header h1 { font-size: 18px; margin: 0 auto 0 0; letter-spacing: .02em; }
+header h1 { font-size: 18px; margin: 0; letter-spacing: .02em; }
+header nav { display: flex; gap: 4px; }
+header nav a { color: var(--dim); text-decoration: none; padding: 6px 10px; border-radius: 6px; }
+header nav a.active, header nav a:hover { color: var(--text); background: #2a313b; }
+.spacer { flex: 1; }
 h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .08em; color: var(--dim); margin: 0 0 10px; }
 main {
   display: grid; gap: 14px; padding: 14px;

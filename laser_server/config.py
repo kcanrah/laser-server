@@ -21,6 +21,12 @@ class Settings:
     camera_width: int = int(_env("LASER_CAMERA_WIDTH", "1280"))
     camera_height: int = int(_env("LASER_CAMERA_HEIGHT", "720"))
     camera_fps: int = int(_env("LASER_CAMERA_FPS", "10"))
+    designs_dir: Path = Path(_env("LASER_DESIGNS_DIR", str(Path.home() / "laser-designs"))).expanduser()
+    # Bed size in mm, used when GRBL doesn't report $130/$131 max travel.
+    bed_width: float = float(_env("LASER_BED_WIDTH", "400"))
+    bed_height: float = float(_env("LASER_BED_HEIGHT", "400"))
+    # Max power S value when GRBL doesn't report $30.
+    s_max: float = float(_env("LASER_S_MAX", "1000"))
     jobs_dir: Path = Path(_env("LASER_JOBS_DIR", str(Path.home() / "laser-jobs"))).expanduser()
     # If set, the UI and API require HTTP basic auth with this password (any username).
     password: str = _env("LASER_PASSWORD", "")

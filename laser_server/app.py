@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import json
 import re
 import secrets
 import time
@@ -17,8 +18,10 @@ from pydantic import BaseModel, Field
 
 from .camera import Camera
 from .config import Settings
+from .design import DesignError, generate_gcode
 from .gcode import job_bounds
 from .grbl import Grbl, GrblError
+from .importers import ImportError_, default_font, list_fonts, svg_to_paths, text_to_paths
 
 STATIC_DIR = Path(__file__).parent / "static"
 ALLOWED_EXT = {".gcode", ".gc", ".nc", ".ngc", ".g", ".txt"}
@@ -36,6 +39,18 @@ class CommandRequest(BaseModel):
     command: str = Field(..., max_length=120)
 
 
+class TextRequest(BaseModel):
+    text: str = Field(..., max_length=2000)
+    font: Optional[str] = None
+    size: float = Field(10, gt=0, le=1000)
+    align: str = "left"
+
+
+class GcodeRequest(BaseModel):
+    design: dict
+    filename: Optional[str] = None
+
+
 def _safe_name(name: str) -> str:
     name = Path(name).name
     name = _SAFE_NAME_RE.sub("_", name).strip(" .")
@@ -48,6 +63,7 @@ def create_app(settings: Optional[Settings] = None, grbl: Optional[Grbl] = None,
                camera: Optional[Camera] = None) -> FastAPI:
     settings = settings or Settings()
     settings.jobs_dir.mkdir(parents=True, exist_ok=True)
+    settings.designs_dir.mkdir(parents=True, exist_ok=True)
     grbl = grbl or Grbl(settings.serial_port, settings.baud)
     if camera is None:
         camera = Camera(settings.camera_device, settings.camera_width,
@@ -85,6 +101,11 @@ def create_app(settings: Optional[Settings] = None, grbl: Optional[Grbl] = None,
     async def grbl_error(_: Request, exc: GrblError):
         return JSONResponse({"detail": str(exc)}, status_code=409)
 
+    @app.exception_handler(DesignError)
+    @app.exception_handler(ImportError_)
+    async def design_error(_: Request, exc: Exception):
+        return JSONResponse({"detail": str(exc)}, status_code=422)
+
     def job_path(name: str) -> Path:
         path = settings.jobs_dir / _safe_name(name)
         if not path.is_file():
@@ -95,6 +116,10 @@ def create_app(settings: Optional[Settings] = None, grbl: Optional[Grbl] = None,
     @app.get("/", include_in_schema=False)
     def index():
         return FileResponse(STATIC_DIR / "index.html")
+
+    @app.get("/design", include_in_schema=False)
+    def design_page():
+        return FileResponse(STATIC_DIR / "design.html")
 
     app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
@@ -223,6 +248,101 @@ def create_app(settings: Optional[Settings] = None, grbl: Optional[Grbl] = None,
     def stop():
         grbl.stop_job()
         return {"ok": True}
+
+    # -------------------------------------------------------------- designs
+    def machine_info() -> dict:
+        return {
+            "s_max": grbl.setting(30, settings.s_max),
+            "laser_mode": grbl.setting(32, 1) == 1,
+            "laser_mode_known": "32" in grbl.settings,
+            "bed_width": grbl.setting(130, 0) or settings.bed_width,
+            "bed_height": grbl.setting(131, 0) or settings.bed_height,
+            "rapid": grbl.setting(110, 6000) or 6000,
+        }
+
+    def design_path(name: str) -> Path:
+        stem = _SAFE_NAME_RE.sub("_", Path(name).stem).strip(" .")
+        if not stem:
+            raise HTTPException(400, "Bad design name")
+        return settings.designs_dir / f"{stem}.json"
+
+    def _generate(design: dict):
+        m = machine_info()
+        return generate_gcode(design, s_max=m["s_max"], laser_mode=m["laser_mode"],
+                              rapid_mm_min=m["rapid"])
+
+    def _stats(result) -> dict:
+        return {"bounds": result.bounds, "cut_mm": result.cut_mm, "travel_mm": result.travel_mm,
+                "est_seconds": result.est_seconds, "lines": result.lines}
+
+    @app.get("/api/machine")
+    def machine():
+        return machine_info()
+
+    @app.get("/api/fonts")
+    def fonts():
+        return {"fonts": list(list_fonts()), "default": default_font()}
+
+    @app.post("/api/text")
+    def text_outline(req: TextRequest):
+        paths = text_to_paths(req.text, req.font, req.size, align=req.align)
+        return {"paths": [[[round(x, 4), round(y, 4)] for x, y in pl] for pl in paths]}
+
+    @app.post("/api/import/svg")
+    async def import_svg(file: UploadFile = File(...)):
+        data = await file.read(20 * 1024 * 1024 + 1)
+        if len(data) > 20 * 1024 * 1024:
+            raise HTTPException(413, "SVG is larger than 20 MB")
+        paths, w, h = svg_to_paths(data)
+        return {"name": Path(file.filename or "import").stem, "paths": paths, "w": w, "h": h}
+
+    @app.get("/api/designs")
+    def list_designs():
+        files = sorted(settings.designs_dir.glob("*.json"), key=lambda p: p.stat().st_mtime, reverse=True)
+        return [{"name": p.stem, "modified": p.stat().st_mtime} for p in files]
+
+    @app.get("/api/designs/{name}")
+    def get_design(name: str):
+        path = design_path(name)
+        if not path.is_file():
+            raise HTTPException(404, "No such design")
+        return FileResponse(path, media_type="application/json")
+
+    @app.put("/api/designs/{name}")
+    def save_design(name: str, design: dict):
+        path = design_path(name)
+        design["name"] = path.stem
+        tmp = path.with_suffix(".tmp")
+        tmp.write_text(json.dumps(design))
+        tmp.replace(path)
+        return {"name": path.stem}
+
+    @app.delete("/api/designs/{name}")
+    def delete_design(name: str):
+        path = design_path(name)
+        if not path.is_file():
+            raise HTTPException(404, "No such design")
+        path.unlink()
+        return {"ok": True}
+
+    @app.post("/api/design/preview")
+    def preview(design: dict):
+        result = _generate(design)
+        for tp in result.toolpaths:  # round to keep the response small
+            tp["paths"] = [[(round(x, 2), round(y, 2)) for x, y in pl] for pl in tp["paths"]]
+        return {"toolpaths": result.toolpaths, **_stats(result)}
+
+    @app.post("/api/design/gcode")
+    def design_gcode(req: GcodeRequest):
+        result = _generate(req.design)
+        if not result.toolpaths:
+            raise HTTPException(422, "Nothing to burn: no objects on enabled layers")
+        stem = Path(req.filename or req.design.get("name") or "design").stem
+        name = _safe_name(f"{stem}.gcode")
+        if grbl.job.running and grbl.job.name == name:
+            raise HTTPException(409, "A job with that name is running")
+        (settings.jobs_dir / name).write_text(result.gcode)
+        return {"name": name, **_stats(result)}
 
     # --------------------------------------------------------------- camera
     @app.get("/camera/stream.mjpg")

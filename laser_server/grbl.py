@@ -30,6 +30,7 @@ RT_SOFT_RESET = b"\x18"
 RT_JOG_CANCEL = b"\x85"
 
 _STATUS_RE = re.compile(r"^<(.*)>$")
+_SETTING_RE = re.compile(r"^\$(\d+)=([-\d.]+)")
 _COMMENT_PAREN_RE = re.compile(r"\(.*?\)")
 
 
@@ -114,6 +115,7 @@ class Grbl:
         self.status = MachineStatus()
         self.job = JobState()
         self.console: deque = deque(maxlen=300)
+        self.settings: dict[str, str] = {}  # GRBL $ settings, e.g. {"30": "1000"}
 
         self._lock = threading.RLock()
         self._space = threading.Condition(self._lock)  # buffer space / acks
@@ -200,6 +202,20 @@ class Grbl:
         if line:
             self._handle_line(line)
 
+    def _request_settings(self) -> None:
+        time.sleep(0.3)
+        try:
+            if not self.job.running:
+                self._send_line("$$", timeout=5)
+        except GrblError:
+            pass
+
+    def setting(self, num: int, default: float) -> float:
+        try:
+            return float(self.settings[str(num)])
+        except (KeyError, ValueError):
+            return default
+
     def _poll_loop(self) -> None:
         while not self._stop.wait(self.poll_interval):
             if self.ser is not None:
@@ -250,7 +266,12 @@ class Grbl:
                     self._finish_job("error: controller reset")
                 self.status.alarm = None
             self._log("info", line)
+            # Read $$ settings (max power, laser mode, bed size) in the background.
+            threading.Thread(target=self._request_settings, daemon=True).start()
             return
+        m = _SETTING_RE.match(line)
+        if m:
+            self.settings[m.group(1)] = m.group(2)
         if line.startswith("ALARM:"):
             with self._lock:
                 self.status.alarm = line
@@ -509,5 +530,12 @@ class Grbl:
                 "feed": s.feed,
                 "spindle": s.spindle,
                 "overrides": s.overrides,
+                "machine": {
+                    "s_max": self.setting(30, 1000),
+                    "laser_mode": self.setting(32, 1) == 1 if "32" in self.settings else None,
+                    "bed_width": self.setting(130, 0) or None,
+                    "bed_height": self.setting(131, 0) or None,
+                    "max_rate_x": self.setting(110, 0) or None,
+                },
                 "job": self.job.as_dict(),
             }
