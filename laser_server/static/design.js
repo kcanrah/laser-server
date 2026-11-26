@@ -23,6 +23,9 @@ let previewOn = false;
 let previewTimer = null;
 let drag = null;
 let spaceDown = false;
+const snap = { grid: true, size: 1, objects: true };
+try { Object.assign(snap, JSON.parse(localStorage.getItem("laser-server.snap") || "{}")); } catch {}
+let cursorWorld = null;
 
 // ----------------------------------------------------------------- helpers
 const uid = () => Math.random().toString(36).slice(2, 10);
@@ -30,6 +33,11 @@ const r1 = (v) => Math.round(v * 10) / 10;
 const r3 = (v) => Math.round(v * 1000) / 1000;
 const deg = (r) => (r * 180) / Math.PI;
 const rad = (d) => (d * Math.PI) / 180;
+// Speeds are stored as mm/min (what G-code uses) and shown as mm/s.
+const toMmS = (mmMin) => Math.round((mmMin / 60) * 100) / 100;
+const fromMmS = (mmS) => mmS * 60;
+const isImageLayer = (l) => l?.mode === "image";
+const fitsLayer = (o, l) => (o.type === "image") === isImageLayer(l);
 
 function toast(msg, kind = "error", html = false) {
   const t = $("#toast");
@@ -90,7 +98,7 @@ const selected = () => (selectedId ? objById(selectedId) : null);
 
 // ---------------------------------------------------------------- geometry
 function localPaths(o) {
-  if (o.type === "rect") return [[[0, 0], [1, 0], [1, 1], [0, 1], [0, 0]]];
+  if (o.type === "rect" || o.type === "image") return [[[0, 0], [1, 0], [1, 1], [0, 1], [0, 0]]];
   if (o.type === "ellipse") {
     const per = (Math.PI * (Math.abs(o.w) + Math.abs(o.h))) / 2;
     const n = Math.floor(Math.min(720, Math.max(24, per / 0.5)));
@@ -220,6 +228,20 @@ function renderObjects() {
   g.innerHTML = "";
   for (const o of design.objects) {
     const layer = layerById(o.layer) || design.layers[0];
+    if (o.type === "image") {
+      const cx = o.x + o.w / 2, cy = o.y + o.h / 2;
+      const grp = el("g", { "data-id": o.id, transform: `rotate(${o.rot || 0} ${cx} ${cy})`,
+        class: layer.enabled ? "" : "hidden-layer", opacity: layer.enabled ? 1 : 0.3 }, g);
+      const flip = el("g", { transform: `translate(${o.x} ${o.y + o.h}) scale(1 -1)` }, grp);
+      const img = el("image", { width: o.w, height: o.h, preserveAspectRatio: "none" }, flip);
+      img.setAttribute("href", `/api/images/${o.image}`);
+      if (o.invert || o.brightness || o.contrast) {
+        const b = 1 + (o.brightness || 0) / 100, c = 1 + (o.contrast || 0) / 100;
+        img.style.filter = `${o.invert ? "invert(1) " : ""}brightness(${b}) contrast(${c})`;
+      }
+      el("rect", { x: o.x, y: o.y, width: o.w, height: o.h, class: "img-frame", stroke: layer.color, "pointer-events": "all" }, grp);
+      continue;
+    }
     const d = polyD(objectPolylines(o));
     const grp = el("g", { "data-id": o.id }, g);
     el("path", { d, stroke: "transparent", "stroke-width": 10, fill: "transparent",
@@ -248,6 +270,10 @@ function renderOverlay() {
     el("line", { x1: topMid[0], y1: topMid[1], x2: rh[0], y2: rh[1], class: "sel-box" }, g);
     el("circle", { cx: rh[0], cy: rh[1], r: hr, class: "handle rot", "data-handle": "rot" }, g);
   }
+  for (const gd of drag?.guides || []) {
+    if (gd.x !== undefined) el("line", { x1: gd.x, y1: -1e4, x2: gd.x, y2: 1e4, class: "guide" }, g);
+    else el("line", { x1: -1e4, y1: gd.y, x2: 1e4, y2: gd.y, class: "guide" }, g);
+  }
   if (drag?.mode === "draw" && drag.cur) {
     const [x0, y0] = drag.start, [x1, y1] = drag.cur;
     if (drag.tool === "line") el("line", { x1: x0, y1: y0, x2: x1, y2: y1, class: "rubber" }, g);
@@ -255,11 +281,12 @@ function renderOverlay() {
       el("ellipse", { cx: (x0 + x1) / 2, cy: (y0 + y1) / 2, rx: Math.abs(x1 - x0) / 2, ry: Math.abs(y1 - y0) / 2, class: "rubber" }, g);
     else el("rect", { x: Math.min(x0, x1), y: Math.min(y0, y1), width: Math.abs(x1 - x0), height: Math.abs(y1 - y0), class: "rubber" }, g);
   }
+  drawRulers();
 }
 
 function layerSummary(l) {
-  const mode = { line: "Line", fill: "Fill", "fill+line": "Fill+Line" }[l.mode];
-  return `${mode} · ${l.power}% · ${l.speed} · ${l.passes}×`;
+  const mode = { line: "Line", fill: "Fill", "fill+line": "Fill+Line", image: "Image" }[l.mode];
+  return `${mode} · ${l.power}% · ${toMmS(l.speed)} mm/s · ${l.passes}×`;
 }
 
 function renderLayers() {
@@ -295,31 +322,54 @@ function renderLayers() {
       const body = document.createElement("div");
       body.className = "layer-body";
       const fill = l.mode.includes("fill");
+      const img = isImageLayer(l);
+      l.dither ||= "floyd";
+      l.min_power ??= 0;
+      l.overscan ??= 2;
+      l.bidirectional ??= true;
       body.innerHTML = `
         <label class="full">Name <input data-k="name" type="text"></label>
         <div class="grid2">
           <label>Mode <select data-k="mode">
             <option value="line">Line (cut/score)</option><option value="fill">Fill (engrave)</option>
-            <option value="fill+line">Fill + Line</option></select></label>
-          <label>Power % <input data-k="power" type="number" min="0" max="100" step="1"></label>
-          <label>Speed mm/min <input data-k="speed" type="number" min="1" step="50"></label>
+            <option value="fill+line">Fill + Line</option><option value="image">Image (raster)</option></select></label>
+          <label>${img ? "Max power %" : "Power %"} <input data-k="power" type="number" min="0" max="100" step="1"></label>
+          <label>Speed mm/s <input data-k="speed" type="number" min="0.1" step="1"></label>
           <label>Passes <input data-k="passes" type="number" min="1" max="100" step="1"></label>
           ${fill ? `<label>Line interval mm <input data-k="hatch" type="number" min="0.01" step="0.01"></label>
           <label>Fill angle° <input data-k="angle" type="number" step="15"></label>` : ""}
+          ${img ? `<label>Dither <select data-k="dither">
+              <option value="floyd">Dithered (photos)</option><option value="threshold">Threshold (B&amp;W)</option>
+              <option value="grayscale">Grayscale (power)</option></select></label>
+            <label>Min power % <input data-k="min_power" type="number" min="0" max="100" step="1" ${l.dither === "grayscale" ? "" : "disabled title='Grayscale only'"}></label>
+            <label>Line interval mm <input data-k="hatch" type="number" min="0.02" step="0.01"></label>
+            <label>Resolution <input type="text" disabled value="${Math.round(25.4 / (l.hatch || 0.1))} DPI"></label>
+            <label>Overscan mm <input data-k="overscan" type="number" min="0" step="0.5"></label>
+            <label class="check"><input data-k="bidirectional" type="checkbox"> Both directions</label>` : ""}
         </div>
         <div class="row"><button class="small-btn danger del">Delete layer</button></div>`;
       body.querySelectorAll("[data-k]").forEach((inp) => {
-        inp.value = l[inp.dataset.k];
+        const k0 = inp.dataset.k;
+        if (inp.type === "checkbox") inp.checked = !!l[k0];
+        else inp.value = k0 === "speed" ? toMmS(l.speed) : l[k0];
         inp.addEventListener("change", () => {
           const k = inp.dataset.k;
-          let v = inp.type === "number" ? parseFloat(inp.value) : inp.value;
-          if (inp.type === "number" && !Number.isFinite(v)) { inp.value = l[k]; return; }
-          if (k === "power") v = Math.min(100, Math.max(0, v));
+          let v = inp.type === "checkbox" ? inp.checked : inp.type === "number" ? parseFloat(inp.value) : inp.value;
+          if (inp.type === "number" && !Number.isFinite(v)) { inp.value = k === "speed" ? toMmS(l.speed) : l[k]; return; }
+          if (k === "power" || k === "min_power") v = Math.min(100, Math.max(0, v));
           if (k === "passes") v = Math.min(100, Math.max(1, Math.round(v)));
-          if (k === "speed") v = Math.max(1, v);
+          if (k === "speed") v = fromMmS(Math.max(0.1, v));
           if (k === "hatch") v = Math.max(0.01, v);
+          if (k === "overscan") v = Math.max(0, v);
+          if (k === "mode" && (v === "image") !== isImageLayer(l) && design.objects.some((o) => o.layer === l.id)) {
+            toast(v === "image" ? "Image layers can only hold images. Move this layer's shapes first."
+                                : "This layer has images. Move them to another image layer first.");
+            inp.value = l.mode;
+            return;
+          }
           checkpoint();
           l[k] = v;
+          if (k === "mode" && v === "image" && l.speed < 1200) l.speed = 6000;
           changed({ layers: true });
         });
       });
@@ -347,6 +397,7 @@ function renderProps() {
   const ls = $("#p-layer");
   ls.innerHTML = "";
   for (const l of design.layers) {
+    if (!fitsLayer(o, l)) continue;
     const opt = document.createElement("option");
     opt.value = l.id; opt.textContent = l.name;
     ls.appendChild(opt);
@@ -355,6 +406,15 @@ function renderProps() {
   const active = document.activeElement;
   for (const [id, v] of [["#p-x", o.x], ["#p-y", o.y], ["#p-w", o.w], ["#p-h", o.h], ["#p-rot", o.rot || 0]]) {
     if ($(id) !== active) $(id).value = r1(v);
+  }
+  const isImg = o.type === "image";
+  $("#image-props").classList.toggle("hidden", !isImg);
+  if (isImg) {
+    $("#p-invert").checked = !!o.invert;
+    for (const k of ["brightness", "contrast"]) {
+      $(`#p-${k}`).value = o[k] || 0;
+      $(`#v-${k}`).textContent = o[k] || 0;
+    }
   }
   const isText = !!o.text;
   $("#text-props").classList.toggle("hidden", !isText);
@@ -371,6 +431,15 @@ function addObject(o) {
   checkpoint();
   o.id = uid();
   o.layer ||= currentLayer;
+  if (!fitsLayer(o, layerById(o.layer))) {
+    const l = design.layers.find((x) => fitsLayer(o, x));
+    if (l) o.layer = l.id;
+    else {
+      const nl = newLayer(design.layers.length, { name: "Shapes", mode: "line" });
+      design.layers.push(nl);
+      o.layer = nl.id;
+    }
+  }
   o.rot ||= 0;
   design.objects.push(o);
   selectedId = o.id;
@@ -411,6 +480,167 @@ function duplicateSelected() {
   addObject(copy);
 }
 
+// --------------------------------------------------------------- snapping
+function objectBBox(o) {
+  if (o.type === "image" || o.type === "rect") {
+    const c = boxCorners(o);
+    return [Math.min(...c.map((p) => p[0])), Math.min(...c.map((p) => p[1])),
+            Math.max(...c.map((p) => p[0])), Math.max(...c.map((p) => p[1]))];
+  }
+  return pathsBBox(objectPolylines(o));
+}
+
+function snapTargets(excludeId) {
+  const xs = [0, bed.w / 2, bed.w], ys = [0, bed.h / 2, bed.h];
+  if (snap.objects) {
+    for (const o of design.objects) {
+      if (o.id === excludeId) continue;
+      const b = objectBBox(o);
+      if (!b) continue;
+      xs.push(b[0], (b[0] + b[2]) / 2, b[2]);
+      ys.push(b[1], (b[1] + b[3]) / 2, b[3]);
+    }
+  }
+  return { xs, ys };
+}
+
+// Best shift (within tolerance) that lines one of `vals` up with a target.
+function nearest(vals, targets, tol) {
+  let best = null;
+  for (const v of vals) for (const t of targets) {
+    const d = t - v;
+    if (Math.abs(d) <= tol && (!best || Math.abs(d) < Math.abs(best.d))) best = { d, t };
+  }
+  return best;
+}
+
+const snapOff = (e) => e.altKey;
+const gridRound = (v) => Math.round(v / snap.size) * snap.size;
+
+function snapPoint(p, e, excludeId) {
+  const guides = [];
+  if (snapOff(e)) return { p, guides };
+  let [x, y] = p;
+  const tol = 8 / view.zoom;
+  const t = snap.objects ? snapTargets(excludeId) : null;
+  const nx = t && nearest([x], t.xs, tol), ny = t && nearest([y], t.ys, tol);
+  if (nx) { x = nx.t; guides.push({ x: nx.t }); } else if (snap.grid) x = gridRound(x);
+  if (ny) { y = ny.t; guides.push({ y: ny.t }); } else if (snap.grid) y = gridRound(y);
+  return { p: [x, y], guides };
+}
+
+// Snap a whole-object move: line up edges/centres, else put the bbox corner on the grid.
+function snapMove(dx, dy, e) {
+  const guides = [];
+  if (snapOff(e) || !drag.bbox) return { dx, dy, guides };
+  const [bx0, by0, bx1, by1] = drag.bbox;
+  const tol = 8 / view.zoom;
+  const xs = [bx0 + dx, (bx0 + bx1) / 2 + dx, bx1 + dx];
+  const ys = [by0 + dy, (by0 + by1) / 2 + dy, by1 + dy];
+  const nx = snap.objects && nearest(xs, drag.targets.xs, tol);
+  const ny = snap.objects && nearest(ys, drag.targets.ys, tol);
+  if (nx) { dx += nx.d; guides.push({ x: nx.t }); } else if (snap.grid) dx = gridRound(bx0 + dx) - bx0;
+  if (ny) { dy += ny.d; guides.push({ y: ny.t }); } else if (snap.grid) dy = gridRound(by0 + dy) - by0;
+  return { dx, dy, guides };
+}
+
+function bindSnapUI() {
+  $("#snap-grid").checked = snap.grid;
+  $("#snap-objects").checked = snap.objects;
+  $("#snap-size").value = String(snap.size);
+  if (!$("#snap-size").value) $("#snap-size").value = "1";
+  const save = () => {
+    snap.grid = $("#snap-grid").checked;
+    snap.objects = $("#snap-objects").checked;
+    snap.size = parseFloat($("#snap-size").value);
+    try { localStorage.setItem("laser-server.snap", JSON.stringify(snap)); } catch {}
+  };
+  ["#snap-grid", "#snap-objects", "#snap-size"].forEach((id) => $(id).addEventListener("change", save));
+  save();
+}
+
+// ----------------------------------------------------------------- rulers
+function rulerStep() {
+  const steps = [0.1, 0.2, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000];
+  const major = steps.find((s) => s * view.zoom >= 55) || 1000;
+  const lead = major / Math.pow(10, Math.floor(Math.log10(major) + 1e-9));
+  let minor = major / (lead === 2 ? 4 : 5);
+  if (minor * view.zoom < 4) minor = major / 2;
+  return { major, minor };
+}
+
+function prepCanvas(c) {
+  const dpr = window.devicePixelRatio || 1;
+  const w = c.clientWidth, h = c.clientHeight;
+  if (c.width !== Math.round(w * dpr) || c.height !== Math.round(h * dpr)) {
+    c.width = Math.round(w * dpr);
+    c.height = Math.round(h * dpr);
+  }
+  const ctx = c.getContext("2d");
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, w, h);
+  return { ctx, w, h };
+}
+
+function drawRulers() {
+  const top = $("#ruler-top"), left = $("#ruler-left");
+  if (!top.clientWidth) return;
+  const { major, minor } = rulerStep();
+  const dec = major < 1 ? 1 : 0;
+  const sel = selected() ? objectBBox(selected()) : null;
+  const css = getComputedStyle(document.documentElement);
+  const dim = css.getPropertyValue("--dim").trim() || "#8c96a3";
+  const accent = css.getPropertyValue("--accent").trim() || "#ff7a1a";
+
+  // top (X)
+  let { ctx, w, h } = prepCanvas(top);
+  if (sel) {
+    ctx.fillStyle = "rgba(255,122,26,.18)";
+    ctx.fillRect(view.panX + sel[0] * view.zoom, 0, (sel[2] - sel[0]) * view.zoom, h);
+  }
+  ctx.strokeStyle = dim; ctx.fillStyle = dim; ctx.font = "10px system-ui, sans-serif"; ctx.textBaseline = "top";
+  ctx.beginPath();
+  const x0 = Math.floor(-view.panX / view.zoom / minor) * minor;
+  for (let x = x0; view.panX + x * view.zoom <= w; x += minor) {
+    const sx = Math.round(view.panX + x * view.zoom) + 0.5;
+    const isMajor = Math.abs(x / major - Math.round(x / major)) < 1e-6;
+    ctx.moveTo(sx, h); ctx.lineTo(sx, h - (isMajor ? 12 : 5));
+    if (isMajor) ctx.fillText((Math.round(x * 10) / 10).toFixed(dec), sx + 3, 2);
+  }
+  ctx.stroke();
+  if (cursorWorld) {
+    ctx.strokeStyle = accent; ctx.beginPath();
+    const cx = Math.round(view.panX + cursorWorld[0] * view.zoom) + 0.5;
+    ctx.moveTo(cx, 0); ctx.lineTo(cx, h); ctx.stroke();
+  }
+
+  // left (Y, up)
+  ({ ctx, w, h } = prepCanvas(left));
+  if (sel) {
+    ctx.fillStyle = "rgba(255,122,26,.18)";
+    ctx.fillRect(0, view.panY - sel[3] * view.zoom, w, (sel[3] - sel[1]) * view.zoom);
+  }
+  ctx.strokeStyle = dim; ctx.fillStyle = dim; ctx.font = "10px system-ui, sans-serif"; ctx.textBaseline = "top";
+  ctx.beginPath();
+  const yTop = view.panY / view.zoom;
+  const y0 = Math.floor((view.panY - h) / view.zoom / minor) * minor;
+  for (let y = y0; y <= yTop + minor; y += minor) {
+    const sy = Math.round(view.panY - y * view.zoom) + 0.5;
+    const isMajor = Math.abs(y / major - Math.round(y / major)) < 1e-6;
+    ctx.moveTo(w, sy); ctx.lineTo(w - (isMajor ? 12 : 5), sy);
+    if (isMajor) {
+      ctx.save(); ctx.translate(2, sy - 3); ctx.rotate(-Math.PI / 2);
+      ctx.fillText((Math.round(y * 10) / 10).toFixed(dec), 0, 0); ctx.restore();
+    }
+  }
+  ctx.stroke();
+  if (cursorWorld) {
+    ctx.strokeStyle = accent; ctx.beginPath();
+    const cy = Math.round(view.panY - cursorWorld[1] * view.zoom) + 0.5;
+    ctx.moveTo(0, cy); ctx.lineTo(w, cy); ctx.stroke();
+  }
+}
+
 // ------------------------------------------------------------------ tools
 function setTool(t) {
   tool = t;
@@ -427,8 +657,8 @@ svg.addEventListener("pointerdown", (e) => {
   }
   if (e.button !== 0) return;
 
-  if (tool === "text") { addText(r1(p[0]), r1(p[1])); return; }
-  if (tool !== "select") { drag = { mode: "draw", tool, start: p, cur: null }; return; }
+  if (tool === "text") { const sp = snapPoint(p, e).p; addText(r1(sp[0]), r1(sp[1])); return; }
+  if (tool !== "select") { drag = { mode: "draw", tool, start: snapPoint(p, e).p, cur: null }; return; }
 
   const handle = e.target.closest("[data-handle]");
   const o = selected();
@@ -442,7 +672,7 @@ svg.addEventListener("pointerdown", (e) => {
       const au = 1 - hu, av = 1 - hv;
       const cx = o.x + o.w / 2, cy = o.y + o.h / 2;
       const anchor = rotateAbout(o.x + au * o.w, o.y + av * o.h, cx, cy, rad(o.rot || 0));
-      drag = { mode: "resize", orig, hu, hv, au, av, anchor, moved: false };
+      drag = { mode: "resize", orig, hu, hv, au, av, anchor, moved: false, guides: [] };
     }
     return;
   }
@@ -452,7 +682,8 @@ svg.addEventListener("pointerdown", (e) => {
     const so = selected();
     currentLayer = so.layer;
     checkpoint();
-    drag = { mode: "move", start: p, ox: so.x, oy: so.y, moved: false };
+    drag = { mode: "move", start: p, ox: so.x, oy: so.y, moved: false,
+      bbox: objectBBox(so), targets: snapTargets(so.id), guides: [] };
     renderLayers();
     renderProps();
     renderOverlay();
@@ -465,9 +696,15 @@ svg.addEventListener("pointerdown", (e) => {
 });
 
 svg.addEventListener("pointermove", (e) => {
-  const p = toWorld(e);
+  let p = toWorld(e);
+  cursorWorld = p;
   $("#coords").textContent = `X ${p[0].toFixed(1)}  Y ${p[1].toFixed(1)} mm`;
-  if (!drag) return;
+  if (!drag) { drawRulers(); return; }
+  if (drag.mode === "draw" || drag.mode === "resize") {
+    const sp = snapPoint(p, e, selectedId);
+    p = sp.p;
+    drag.guides = sp.guides;
+  }
   const o = selected();
   if (drag.mode === "pan") {
     view.panX = drag.px + (e.clientX - drag.sx);
@@ -479,8 +716,11 @@ svg.addEventListener("pointermove", (e) => {
   } else if (drag.mode === "move" && o) {
     let dx = p[0] - drag.start[0], dy = p[1] - drag.start[1];
     if (e.shiftKey) { if (Math.abs(dx) > Math.abs(dy)) dy = 0; else dx = 0; }
-    o.x = r1(drag.ox + dx);
-    o.y = r1(drag.oy + dy);
+    const sm = snapMove(dx, dy, e);
+    if (e.shiftKey) { if (dx === 0) sm.dx = 0; if (dy === 0) sm.dy = 0; }
+    drag.guides = sm.guides;
+    o.x = r3(drag.ox + sm.dx);
+    o.y = r3(drag.oy + sm.dy);
     drag.moved = true;
     renderObjects();
     renderProps();
@@ -488,6 +728,7 @@ svg.addEventListener("pointermove", (e) => {
     const cx = o.x + o.w / 2, cy = o.y + o.h / 2;
     let a = deg(Math.atan2(p[1] - cy, p[0] - cx)) - 90;
     a = e.shiftKey ? Math.round(a / 15) * 15 : Math.round(a);
+    if (snap.grid && !snapOff(e) && !e.shiftKey) a = Math.round(a);
     o.rot = ((a % 360) + 540) % 360 - 180;
     drag.moved = true;
     renderObjects();
@@ -537,8 +778,10 @@ function endDrag() {
   if (["move", "rotate", "resize"].includes(d.mode)) {
     if (d.moved) changed(); else undoStack.pop();
   }
+  renderOverlay();
 }
 svg.addEventListener("pointerup", endDrag);
+svg.addEventListener("pointerleave", () => { cursorWorld = null; drawRulers(); });
 svg.addEventListener("pointercancel", endDrag);
 
 svg.addEventListener("wheel", (e) => {
@@ -577,6 +820,7 @@ document.addEventListener("keydown", (e) => {
     changed();
     return;
   }
+  if (!mod && e.key.toLowerCase() === "i") { $("#import-image").click(); return; }
   const keys = { v: "select", r: "rect", e: "ellipse", l: "line", t: "text" };
   if (!mod && keys[e.key.toLowerCase()]) setTool(keys[e.key.toLowerCase()]);
 });
@@ -644,6 +888,24 @@ $("#p-size").addEventListener("change", () => {
 });
 $("#p-align").addEventListener("change", () => textChanged((t) => (t.align = $("#p-align").value)));
 
+$("#p-invert").addEventListener("change", () => {
+  const o = selected();
+  if (!o) return;
+  checkpoint();
+  o.invert = $("#p-invert").checked;
+  changed();
+});
+for (const k of ["brightness", "contrast"]) {
+  $(`#p-${k}`).addEventListener("input", () => { $(`#v-${k}`).textContent = $(`#p-${k}`).value; });
+  $(`#p-${k}`).addEventListener("change", () => {
+    const o = selected();
+    if (!o) return;
+    checkpoint();
+    o[k] = parseInt($(`#p-${k}`).value, 10);
+    changed();
+  });
+}
+
 $("#btn-del").onclick = deleteSelected;
 $("#btn-dup").onclick = duplicateSelected;
 $("#btn-center").onclick = () => {
@@ -682,7 +944,14 @@ async function runPreview() {
   try { res = await api("POST", "/api/design/preview", design); } catch { return; }
   if (!previewOn) return;
   g.innerHTML = "";
-  for (const tp of res.toolpaths) el("path", { d: polyD(tp.paths), stroke: tp.color }, g);
+  for (const tp of res.toolpaths) {
+    if (tp.paths.length) el("path", { d: polyD(tp.paths), stroke: tp.color }, g);
+    for (const im of tp.images || []) {
+      const flip = el("g", { transform: `translate(${im.x} ${im.y + im.h}) scale(1 -1)` }, g);
+      const node = el("image", { width: im.w, height: im.h, preserveAspectRatio: "none" }, flip);
+      node.setAttribute("href", im.href);
+    }
+  }
   const stats = $("#stats");
   stats.classList.remove("hidden");
   if (!res.bounds) { stats.textContent = "Nothing to burn (no objects on enabled layers)"; return; }
@@ -775,6 +1044,41 @@ $("#import-svg").addEventListener("change", async (e) => {
   } catch {}
 });
 
+function imageLayer() {
+  const cur = layerById(currentLayer);
+  if (isImageLayer(cur)) return cur.id;
+  const l = design.layers.find(isImageLayer);
+  if (l) return l.id;
+  const nl = newLayer(design.layers.length, { name: "Image", mode: "image", power: 60, min_power: 0,
+    speed: 6000, hatch: 0.1, dither: "floyd", overscan: 2, bidirectional: true });
+  design.layers.push(nl);
+  return nl.id;
+}
+
+$("#import-image").addEventListener("change", async (e) => {
+  const file = e.target.files[0];
+  e.target.value = "";
+  if (!file) return;
+  const fd = new FormData();
+  fd.append("file", file);
+  toast(`Uploading ${file.name}…`, "info");
+  try {
+    const r = await api("POST", "/api/images", fd);
+    let w = r.mm_width || 100;
+    let h = r.mm_height || (100 * r.px_height) / r.px_width;
+    const k = Math.min(1, (bed.w * 0.9) / w, (bed.h * 0.9) / h);
+    w *= k; h *= k;
+    const before = JSON.stringify(design);
+    const layer = imageLayer();
+    addObject({ type: "image", image: r.image || r.id, layer, w: r3(w), h: r3(h),
+      x: r1((bed.w - w) / 2), y: r1((bed.h - h) / 2), invert: false, brightness: 0, contrast: 0 });
+    undoStack[undoStack.length - 1] = before;
+    currentLayer = layer;
+    renderLayers();
+    toast(`Imported ${r.name} (${w.toFixed(1)} × ${h.toFixed(1)} mm). Image settings are on the "${layerById(layer).name}" layer.`, "info");
+  } catch {}
+});
+
 // ------------------------------------------------------------- make G-code
 $("#btn-send").onclick = async () => {
   design.name = $("#design-name").value.trim() || "untitled";
@@ -809,6 +1113,7 @@ async function init() {
   afterLoad();
   renderBed();
   setTool("select");
+  bindSnapUI();
   renderLayers();
   renderObjects();
   renderProps();
@@ -816,4 +1121,5 @@ async function init() {
   dirty = false;
 }
 window.addEventListener("resize", () => applyView());
+new ResizeObserver(() => drawRulers()).observe($("#ruler-top"));
 init();

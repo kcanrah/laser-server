@@ -9,7 +9,7 @@ HOME_DIR="$HOME"
 
 echo "==> Installing system packages"
 sudo apt-get update -qq
-sudo apt-get install -y -qq python3-venv python3-opencv python3-serial v4l-utils fonts-dejavu-core fonts-liberation
+sudo apt-get install -y -qq python3-venv python3-opencv python3-serial v4l-utils fonts-dejavu-core fonts-liberation python3-pil python3-numpy
 
 echo "==> Adding $USER_NAME to dialout (serial) and video (camera) groups"
 sudo usermod -aG dialout,video "$USER_NAME"

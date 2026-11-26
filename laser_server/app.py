@@ -21,6 +21,7 @@ from .config import Settings
 from .design import DesignError, generate_gcode
 from .gcode import job_bounds
 from .grbl import Grbl, GrblError
+from .images import ImageError, ImageStore
 from .importers import ImportError_, default_font, list_fonts, svg_to_paths, text_to_paths
 
 STATIC_DIR = Path(__file__).parent / "static"
@@ -64,6 +65,7 @@ def create_app(settings: Optional[Settings] = None, grbl: Optional[Grbl] = None,
     settings = settings or Settings()
     settings.jobs_dir.mkdir(parents=True, exist_ok=True)
     settings.designs_dir.mkdir(parents=True, exist_ok=True)
+    images = ImageStore(settings.designs_dir / "images")
     grbl = grbl or Grbl(settings.serial_port, settings.baud)
     if camera is None:
         camera = Camera(settings.camera_device, settings.camera_width,
@@ -103,6 +105,7 @@ def create_app(settings: Optional[Settings] = None, grbl: Optional[Grbl] = None,
 
     @app.exception_handler(DesignError)
     @app.exception_handler(ImportError_)
+    @app.exception_handler(ImageError)
     async def design_error(_: Request, exc: Exception):
         return JSONResponse({"detail": str(exc)}, status_code=422)
 
@@ -266,10 +269,10 @@ def create_app(settings: Optional[Settings] = None, grbl: Optional[Grbl] = None,
             raise HTTPException(400, "Bad design name")
         return settings.designs_dir / f"{stem}.json"
 
-    def _generate(design: dict):
+    def _generate(design: dict, **kw):
         m = machine_info()
         return generate_gcode(design, s_max=m["s_max"], laser_mode=m["laser_mode"],
-                              rapid_mm_min=m["rapid"])
+                              rapid_mm_min=m["rapid"], image_loader=images.load, **kw)
 
     def _stats(result) -> dict:
         return {"bounds": result.bounds, "cut_mm": result.cut_mm, "travel_mm": result.travel_mm,
@@ -327,22 +330,44 @@ def create_app(settings: Optional[Settings] = None, grbl: Optional[Grbl] = None,
 
     @app.post("/api/design/preview")
     def preview(design: dict):
-        result = _generate(design)
+        result = _generate(design, out=False, preview_images=True)
         for tp in result.toolpaths:  # round to keep the response small
             tp["paths"] = [[(round(x, 2), round(y, 2)) for x, y in pl] for pl in tp["paths"]]
         return {"toolpaths": result.toolpaths, **_stats(result)}
 
     @app.post("/api/design/gcode")
     def design_gcode(req: GcodeRequest):
-        result = _generate(req.design)
-        if not result.toolpaths:
-            raise HTTPException(422, "Nothing to burn: no objects on enabled layers")
         stem = Path(req.filename or req.design.get("name") or "design").stem
         name = _safe_name(f"{stem}.gcode")
         if grbl.job.running and grbl.job.name == name:
             raise HTTPException(409, "A job with that name is running")
-        (settings.jobs_dir / name).write_text(result.gcode)
+        dest = settings.jobs_dir / name
+        tmp = dest.with_suffix(".gcode.part")
+        try:
+            with tmp.open("w", buffering=1024 * 1024) as f:
+                result = _generate(req.design, out=f)
+            if result.bounds is None:
+                raise HTTPException(422, "Nothing to burn: no objects on enabled layers")
+            tmp.replace(dest)
+        finally:
+            tmp.unlink(missing_ok=True)
         return {"name": name, **_stats(result)}
+
+    @app.post("/api/images")
+    async def upload_image(file: UploadFile = File(...)):
+        data = await file.read(40 * 1024 * 1024 + 1)
+        if len(data) > 40 * 1024 * 1024:
+            raise HTTPException(413, "Image is larger than 40 MB")
+        info = images.save(data)
+        info["name"] = Path(file.filename or "image").stem
+        return info
+
+    @app.get("/api/images/{image_id}")
+    def get_image(image_id: str):
+        path = images.path(image_id)
+        if not path.is_file():
+            raise HTTPException(404, "No such image")
+        return FileResponse(path, media_type="image/png", headers={"Cache-Control": "max-age=31536000, immutable"})
 
     # --------------------------------------------------------------- camera
     @app.get("/camera/stream.mjpg")

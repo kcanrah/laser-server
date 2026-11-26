@@ -64,7 +64,7 @@ function render(s) {
     $(`#w${a}`).textContent = fmt(s.wpos[i]);
     $(`#m${a}`).textContent = fmt(s.mpos[i]);
   });
-  $("#feed").textContent = Math.round(s.feed);
+  $("#feed").textContent = `${Math.round(s.feed / 6) / 10} mm/s`;
   $("#power").textContent = Math.round(s.spindle);
   $("#version").textContent = s.version || "";
 
@@ -111,7 +111,7 @@ document.querySelectorAll("[data-jog]").forEach((b) => {
   b.addEventListener("click", () => {
     const [dx, dy] = b.dataset.jog.split(",").map(Number);
     const step = parseFloat($("#step").value);
-    post("/api/jog", { x: dx * step, y: dy * step, feed: parseFloat($("#jogfeed").value) || 1000 });
+    post("/api/jog", { x: dx * step, y: dy * step, feed: (parseFloat($("#jogfeed").value) || 20) * 60 });
   });
 });
 document.addEventListener("keydown", (e) => {
@@ -120,7 +120,7 @@ document.addEventListener("keydown", (e) => {
   if (map[e.key]) {
     e.preventDefault();
     const step = parseFloat($("#step").value);
-    post("/api/jog", { x: map[e.key][0] * step, y: map[e.key][1] * step, feed: parseFloat($("#jogfeed").value) || 1000 });
+    post("/api/jog", { x: map[e.key][0] * step, y: map[e.key][1] * step, feed: (parseFloat($("#jogfeed").value) || 20) * 60 });
   } else if (e.key === "Escape") post("/api/jog/cancel");
 });
 

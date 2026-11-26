@@ -13,13 +13,15 @@ _WORD_RE = re.compile(r"([A-Z])([-+]?\d*\.?\d+)")
 
 def job_bounds(path: Path) -> Optional[tuple[float, float, float, float]]:
     """Return (xmin, ymin, xmax, ymax) in mm, work coordinates, of the moves
-    that cut (G1/G2/G3). Falls back to all moves if there are no cutting moves.
-    Arc bulges beyond their endpoints are ignored."""
+    that burn (G1/G2/G3 with S > 0). Falls back to all G1-G3 moves if the file
+    never sets S, then to all moves. Arc bulges beyond endpoints are ignored."""
     absolute = True
     scale = 1.0
     motion = 0
     x = y = 0.0
     cut: list[tuple[float, float]] = []
+    burn: list[tuple[float, float]] = []
+    power = 0.0
     any_moves: list[tuple[float, float]] = []
 
     for raw in path.read_text(errors="replace").splitlines():
@@ -49,16 +51,18 @@ def job_bounds(path: Path) -> Optional[tuple[float, float, float, float]]:
             elif letter == "Y":
                 ny = v * scale if absolute else y + v * scale
                 has_xy = True
+            elif letter == "S":
+                power = v
         if not has_xy:
             continue
         if motion in (1, 2, 3):
-            if not cut:
-                cut.append((x, y))
-            cut.append((nx, ny))
+            cut += [(x, y), (nx, ny)]
+            if power > 0:
+                burn += [(x, y), (nx, ny)]
         any_moves.append((nx, ny))
         x, y = nx, ny
 
-    pts = cut or any_moves
+    pts = burn or cut or any_moves
     if not pts:
         return None
     xs = [p[0] for p in pts]

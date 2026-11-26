@@ -29,6 +29,7 @@
       <button data-tool="ellipse" title="Ellipse (E)">◯<span>Ellipse</span></button>
       <button data-tool="line" title="Line (L)">╱<span>Line</span></button>
       <button data-tool="text" title="Text (T)">T<span>Text</span></button>
+      <label class="button tbtn" title="Import an image to engrave (I)">🖼<span>Image</span><input id="import-image" type="file" accept="image/*" hidden></label>
       <div class="sep"></div>
       <button id="btn-undo" title="Undo (Ctrl+Z)">↶<span>Undo</span></button>
       <button id="btn-redo" title="Redo (Ctrl+Shift+Z)">↷<span>Redo</span></button>
@@ -36,6 +37,9 @@
     </div>
 
     <div class="stage-wrap">
+      <div class="ruler-corner" title="mm"></div>
+      <canvas id="ruler-top" class="ruler"></canvas>
+      <canvas id="ruler-left" class="ruler"></canvas>
       <svg id="stage" xmlns="http://www.w3.org/2000/svg">
         <g id="world">
           <rect id="bed" x="0" y="0"></rect>
@@ -45,6 +49,15 @@
           <g id="overlay"></g>
         </g>
       </svg>
+      <div class="snapbar" title="Hold Alt while dragging to ignore snapping">
+        <span class="dim">Snap</span>
+        <label><input id="snap-grid" type="checkbox"> Grid</label>
+        <select id="snap-size">
+          <option value="0.1">0.1 mm</option><option value="0.5">0.5 mm</option><option value="1">1 mm</option>
+          <option value="2">2 mm</option><option value="5">5 mm</option><option value="10">10 mm</option>
+        </select>
+        <label><input id="snap-objects" type="checkbox"> Objects</label>
+      </div>
       <div id="coords" class="coords"></div>
       <div id="stats" class="stats hidden"></div>
     </div>
@@ -78,6 +91,13 @@
                 <select id="p-align"><option value="left">Left</option><option value="center">Center</option><option value="right">Right</option></select>
               </label>
             </div>
+          </div>
+          <div id="image-props" class="hidden">
+            <label class="check-row"><input id="p-invert" type="checkbox"> Invert</label>
+            <label class="full"><span>Brightness <b class="val" id="v-brightness"></b></span>
+              <input id="p-brightness" type="range" min="-100" max="100" step="1"></label>
+            <label class="full"><span>Contrast <b class="val" id="v-contrast"></b></span>
+              <input id="p-contrast" type="range" min="-100" max="100" step="1"></label>
           </div>
           <div class="row buttons">
             <button id="btn-center" title="Center on the bed">Center</button>

@@ -24,7 +24,9 @@ Design format::
 Every object maps its local geometry onto the box (x, y, w, h) and is then
 rotated by `rot` degrees (counter-clockwise) about the box centre.
 Layer modes: "line" traces outlines, "fill" hatches closed shapes,
-"fill+line" does both (fill first).
+"fill+line" does both (fill first), "image" raster-engraves image objects
+({"type": "image", "image": "<id>", ..., "invert", "brightness", "contrast"}).
+Speeds are mm/min (the UI shows mm/s).
 """
 
 from __future__ import annotations
@@ -38,7 +40,9 @@ Polyline = list[Point]
 
 DEFAULT_LAYER = {
     "mode": "line", "power": 50.0, "speed": 1000.0, "passes": 1,
-    "hatch": 0.1, "angle": 0.0, "enabled": True, "overscan": 0.0,
+    "hatch": 0.1, "angle": 0.0, "enabled": True,
+    # image layers
+    "min_power": 0.0, "dither": "floyd", "overscan": 2.0, "bidirectional": True,
 }
 
 MAX_SEGMENTS = 2_000_000  # guard against runaway fills on the Pi
@@ -202,8 +206,8 @@ def _order_paths(paths: list[Polyline], start: Point = (0.0, 0.0)) -> list[Polyl
 # ----------------------------------------------------------------- G-code
 @dataclass
 class GcodeResult:
-    gcode: str
-    toolpaths: list = field(default_factory=list)  # [{"layer", "color", "paths": [...]}]
+    gcode: Optional[str] = None  # only when no output file was given
+    toolpaths: list = field(default_factory=list)  # [{"layer", "color", "paths", "images"}]
     bounds: Optional[tuple] = None
     cut_mm: float = 0.0
     travel_mm: float = 0.0
@@ -211,10 +215,16 @@ class GcodeResult:
     lines: int = 0
 
 
+class _NullSink:
+    def write(self, _s: str) -> None:
+        pass
+
+
 class _Writer:
-    def __init__(self, laser_mode: bool, rapid: float):
-        self.out: list[str] = []
-        self.pos: Point = (0.0, 0.0)
+    def __init__(self, sink, laser_mode: bool, rapid: float):
+        self.sink = sink
+        self.lines = 0
+        self.pos: Optional[Point] = None  # unknown until the first move
         self.f: Optional[float] = None
         self.s: Optional[float] = None
         self.laser_mode = laser_mode
@@ -222,73 +232,115 @@ class _Writer:
         self.cut_mm = 0.0
         self.travel_mm = 0.0
         self.seconds = 0.0
-        self.on = False  # non-laser-mode spindle state
+        self.on = False  # spindle state when not in laser mode
+
+    def emit(self, line: str) -> None:
+        self.sink.write(line + "\n")
+        self.lines += 1
+        if self.lines > MAX_LINES:
+            raise DesignError("Design produces too much G-code; make it smaller or coarser")
 
     @staticmethod
     def _n(v: float) -> str:
         t = f"{v:.3f}".rstrip("0").rstrip(".")
         return "0" if t in ("-0", "") else t
 
+    def _xy(self, p: Point) -> str:
+        if self.pos is None:
+            return f"X{self._n(p[0])}Y{self._n(p[1])}"
+        out = ""
+        if self._n(p[0]) != self._n(self.pos[0]):
+            out += f"X{self._n(p[0])}"
+        if self._n(p[1]) != self._n(self.pos[1]):
+            out += f"Y{self._n(p[1])}"
+        return out
+
     def travel(self, p: Point) -> None:
-        d = math.dist(self.pos, p)
-        if d < 1e-4:
+        d = math.dist(self.pos, p) if self.pos is not None else 0.0
+        if self.pos is not None and d < 1e-4:
             return
         if not self.laser_mode and self.on:
-            self.out.append("M5")
+            self.emit("M5")
             self.on = False
-        self.out.append(f"G0X{self._n(p[0])}Y{self._n(p[1])}")
+        self.emit(f"G0{self._xy(p)}")
         self.travel_mm += d
         self.seconds += d / self.rapid * 60
         self.pos = p
 
     def cut(self, p: Point, s: float, f: float) -> None:
+        if self.pos is None:
+            self.travel(p)
+            return
         d = math.dist(self.pos, p)
         if d < 1e-4:
             return
         if not self.laser_mode and not self.on:
-            self.out.append(f"M3S{self._n(s)}")
+            self.emit(f"M3S{self._n(s)}")
             self.on = True
             self.s = s
-        line = f"G1X{self._n(p[0])}Y{self._n(p[1])}"
+        line = f"G1{self._xy(p)}"
         if s != self.s:
             line += f"S{self._n(s)}"
             self.s = s
         if f != self.f:
             line += f"F{self._n(f)}"
             self.f = f
-        self.out.append(line)
+        self.emit(line)
         if s > 0:
             self.cut_mm += d
         self.seconds += d / f * 60
         self.pos = p
 
 
+MAX_LINES = 12_000_000
+
+LAYER_MODES = ("line", "fill", "fill+line", "image")
+
+
+def _validate_layer(raw: dict) -> dict:
+    layer = {**DEFAULT_LAYER, **raw}
+    name = layer.get("name", layer.get("id"))
+    if layer["mode"] not in LAYER_MODES:
+        raise DesignError(f"Layer {name}: unknown mode {layer['mode']!r}")
+    layer["power"] = min(100.0, max(0.0, float(layer["power"])))
+    layer["min_power"] = min(layer["power"], max(0.0, float(layer.get("min_power", 0) or 0)))
+    layer["speed"] = float(layer["speed"])
+    layer["passes"] = int(layer["passes"])
+    layer["overscan"] = max(0.0, float(layer.get("overscan", 0) or 0))
+    if layer["speed"] <= 0:
+        raise DesignError(f"Layer {name}: speed must be > 0")
+    if not 1 <= layer["passes"] <= 100:
+        raise DesignError(f"Layer {name}: passes must be 1-100")
+    if float(layer["hatch"]) <= 0:
+        raise DesignError(f"Layer {name}: line interval must be > 0")
+    return layer
+
+
 def generate_gcode(design: dict, s_max: float = 1000.0, laser_mode: bool = True,
-                   rapid_mm_min: float = 6000.0, return_home: bool = True) -> GcodeResult:
-    layers = []
-    for raw in design.get("layers", []):
-        layer = {**DEFAULT_LAYER, **raw}
-        if layer["mode"] not in ("line", "fill", "fill+line"):
-            raise DesignError(f"Layer {layer.get('name')}: unknown mode {layer['mode']!r}")
-        layer["power"] = min(100.0, max(0.0, float(layer["power"])))
-        layer["speed"] = float(layer["speed"])
-        layer["passes"] = int(layer["passes"])
-        if layer["speed"] <= 0:
-            raise DesignError(f"Layer {layer.get('name')}: speed must be > 0")
-        if not 1 <= layer["passes"] <= 100:
-            raise DesignError(f"Layer {layer.get('name')}: passes must be 1-100")
-        layers.append(layer)
+                   rapid_mm_min: float = 6000.0, return_home: bool = True,
+                   out=None, image_loader=None, preview_images: bool = False) -> GcodeResult:
+    """Generate G-code for a design. Writes to `out` (a text file) if given,
+    otherwise returns the text in result.gcode. Pass out=False to only compute
+    stats and toolpaths (for previews). `image_loader(id)` returns a PIL image."""
+    layers = [_validate_layer(raw) for raw in design.get("layers", [])]
 
     by_layer: dict = {layer["id"]: [] for layer in layers}
     for obj in design.get("objects", []):
         if obj.get("layer") in by_layer:
             by_layer[obj["layer"]].append(obj)
 
-    w = _Writer(laser_mode, rapid_mm_min)
+    buf = None
+    if out is None:
+        import io
+        buf = out = io.StringIO()
+    elif out is False:
+        out = _NullSink()
+    w = _Writer(out, laser_mode, rapid_mm_min)
     name = str(design.get("name") or "design").replace("\n", " ")
-    w.out += [f"; {name} - generated by laser-server", "G90", "G21", "M5"]
+    for line in (f"; {name} - generated by laser-server", "G90", "G21", "M5"):
+        w.emit(line)
     if laser_mode:
-        w.out.append("M4S0")  # dynamic power: laser only fires while moving
+        w.emit("M4S0")  # dynamic power: laser only fires while moving
     toolpaths = []
     all_pts: list[Polyline] = []
     segments = 0
@@ -300,9 +352,38 @@ def generate_gcode(design: dict, s_max: float = 1000.0, laser_mode: bool = True,
         s = round(s_max * layer["power"] / 100.0, 3)
         f = layer["speed"]
         mode = layer["mode"]
+        lname = layer.get("name", layer["id"])
+        tp = {"layer": layer["id"], "color": layer.get("color", "#000"), "paths": [], "images": []}
+
+        if mode == "image":
+            for obj in objs:
+                if obj.get("type") != "image":
+                    raise DesignError(f"Layer {lname} is an image layer; move shapes and text to a line or fill layer")
+            w.emit(f"; Layer {lname}: image ({layer.get('dither', 'floyd')}), {layer['min_power']:g}-"
+                   f"{layer['power']:g}%, {f:g} mm/min, interval {layer['hatch']:g} mm, {layer['passes']} pass(es)")
+            for obj in objs:
+                if image_loader is None:
+                    raise DesignError("Images are not available")
+                from .images import burn_bounds, placement, preview_data_url, process
+                pixels, x0, y0, interval = process(image_loader(obj["image"]), obj, layer)
+                bb = burn_bounds(pixels, x0, y0, interval)
+                if bb is None:
+                    continue
+                all_pts.append([(bb[0], bb[1]), (bb[2], bb[3])])
+                if preview_images:
+                    tp["images"].append({**placement(pixels, x0, y0, interval),
+                                         "href": preview_data_url(pixels, tp["color"])})
+                s_lo = round(s_max * layer["min_power"] / 100.0, 3)
+                for _ in range(layer["passes"]):
+                    _raster(w, pixels, x0, y0, interval, s_lo, s, f, layer)
+            toolpaths.append(tp)
+            continue
+
         outlines: list[Polyline] = []
         fills: list[list[Point]] = []
         for obj in objs:
+            if obj.get("type") == "image":
+                raise DesignError(f"Images must be on an image layer (layer {lname} is {mode})")
             pls = object_polylines(obj)
             if "fill" in mode:
                 fills.extend(hatch_fill(pls, float(layer["hatch"]), float(layer["angle"])))
@@ -312,9 +393,7 @@ def generate_gcode(design: dict, s_max: float = 1000.0, laser_mode: bool = True,
         if segments > MAX_SEGMENTS:
             raise DesignError("Design is too large to generate")
 
-        w.out.append(f"; Layer {layer.get('name', layer['id'])}: {mode}, "
-                     f"{layer['power']:g}% (S{s:g}), {f:g} mm/min, {layer['passes']} pass(es)")
-        tp = {"layer": layer["id"], "color": layer.get("color", "#000"), "paths": []}
+        w.emit(f"; Layer {lname}: {mode}, {layer['power']:g}% (S{s:g}), {f:g} mm/min, {layer['passes']} pass(es)")
         for _ in range(layer["passes"]):
             for row in fills:
                 w.travel(row[0])
@@ -327,27 +406,69 @@ def generate_gcode(design: dict, s_max: float = 1000.0, laser_mode: bool = True,
                     else:
                         w.travel(row[k])
                     w.cut(row[k + 1], s, f)
-            for pl in _order_paths(outlines, w.pos):
+            for pl in _order_paths(outlines, w.pos or (0.0, 0.0)):
                 w.travel(pl[0])
                 for p in pl[1:]:
                     w.cut(p, s, f)
         for row in fills:
-            tp["paths"] += [[row[k], row[k + 1]] for k in range(0, len(row), 2)]
-            all_pts += [[row[k], row[k + 1]] for k in range(0, len(row), 2)]
+            segs = [[row[k], row[k + 1]] for k in range(0, len(row), 2)]
+            tp["paths"] += segs
+            all_pts += segs
         tp["paths"] += outlines
         all_pts += outlines
         toolpaths.append(tp)
 
-    w.out.append("M5")
+    w.emit("M5")
     if return_home:
         w.travel((0.0, 0.0))
-    w.out.append("M2")
+    w.emit("M2")
     return GcodeResult(
-        gcode="\n".join(w.out) + "\n",
+        gcode=buf.getvalue() if buf is not None else None,
         toolpaths=toolpaths,
         bounds=bbox(all_pts),
         cut_mm=round(w.cut_mm, 1),
         travel_mm=round(w.travel_mm, 1),
         est_seconds=round(w.seconds, 1),
-        lines=len(w.out),
+        lines=w.lines,
     )
+
+
+def _raster(w: _Writer, pixels, x0: float, y0: float, interval: float,
+            s_lo: float, s_hi: float, f: float, layer: dict) -> None:
+    """Engrave a processed image row by row (top to bottom)."""
+    from .images import power_rows
+
+    grayscale = layer.get("dither") == "grayscale"
+    bidir = layer.get("bidirectional", True)
+    ov = float(layer.get("overscan", 0) or 0)
+    if isinstance(w.sink, _NullSink):
+        # Preview: estimate time without generating every move (slow on a Pi).
+        from .images import estimate
+
+        burn_mm, scan_mm, nrows = estimate(pixels, interval, ov if w.laser_mode else 0, grayscale)
+        w.cut_mm += burn_mm
+        w.seconds += scan_mm / f * 60 + nrows * (interval if bidir else 2 * scan_mm / max(nrows, 1)) / w.rapid * 60
+        return
+    H = pixels.shape[0]
+    forward = True
+    for r, starts, ends, powers in power_rows(pixels, s_lo, s_hi, grayscale):
+        y = y0 + (H - r - 0.5) * interval
+        runs = list(zip(starts.tolist(), ends.tolist(), powers.tolist()))
+        if forward:
+            xs = [(x0 + a * interval, x0 + b * interval, p) for a, b, p in runs]
+            sign = 1
+        else:
+            xs = [(x0 + b * interval, x0 + a * interval, p) for a, b, p in reversed(runs)]
+            sign = -1
+        start, end = xs[0][0], xs[-1][1]
+        if ov and w.laser_mode:
+            w.travel((start - sign * ov, y))
+            w.cut((start, y), 0, f)
+        else:
+            w.travel((start, y))
+        for _a, b, p in xs:
+            w.cut((b, y), p, f)
+        if ov and w.laser_mode:
+            w.cut((end + sign * ov, y), 0, f)
+        if bidir:
+            forward = not forward

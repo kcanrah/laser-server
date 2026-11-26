@@ -131,3 +131,89 @@ def test_design_api_roundtrip(client):  # noqa: F811
 def test_machine_settings_from_grbl(client, fake):  # noqa: F811
     m = client.get("/api/machine").json()
     assert m["s_max"] == 1000 and m["bed_width"] == 400
+
+
+def _png(draw):
+    import io
+
+    from PIL import Image, ImageDraw
+
+    im = Image.new("RGB", (200, 100), "white")
+    draw(ImageDraw.Draw(im))
+    buf = io.BytesIO()
+    im.save(buf, "PNG")
+    return buf.getvalue()
+
+
+IMG_LAYER = {"id": "i", "name": "Img", "mode": "image", "power": 50, "min_power": 10, "speed": 6000,
+             "hatch": 0.5, "dither": "threshold", "overscan": 2, "passes": 1}
+
+
+def test_image_raster_gcode(tmp_path):
+    from laser_server.images import ImageStore
+
+    store = ImageStore(tmp_path)
+    info = store.save(_png(lambda d: d.rectangle([50, 25, 149, 74], fill="black")))
+    obj = {"type": "image", "image": info["id"], "layer": "i", "x": 0, "y": 0, "w": 100, "h": 50}
+    r = generate_gcode({"layers": [IMG_LAYER], "objects": [obj]}, image_loader=store.load)
+    # black box is the middle half of the image: x 25..75, y 12.5..37.5
+    assert r.bounds == pytest.approx((25, 12.5, 75, 37.5), abs=0.01)
+    burn_x = []
+    s = 0.0
+    x = 0.0
+    for line in r.gcode.splitlines():
+        m = dict(re.findall(r"([XYS])([-\d.]+)", line))
+        if "S" in m:
+            s = float(m["S"])
+        nx = float(m.get("X", x))
+        if line.startswith("G1") and s > 0:
+            assert s == 500
+            burn_x += [x, nx]
+        x = nx
+    assert min(burn_x) == pytest.approx(25) and max(burn_x) == pytest.approx(75)
+    # rows alternate direction and overscan with laser off goes 2mm past the edge
+    assert "G0X23Y" in r.gcode or "G0X77Y" in r.gcode
+    # fast preview estimate is close to the real thing
+    p = generate_gcode({"layers": [IMG_LAYER], "objects": [obj]}, image_loader=store.load, out=False, preview_images=True)
+    assert p.est_seconds == pytest.approx(r.est_seconds, rel=0.1)
+    assert p.toolpaths[0]["images"][0]["href"].startswith("data:image/png;base64,")
+
+
+def test_image_grayscale_and_invert(tmp_path):
+    from laser_server.images import ImageStore
+
+    store = ImageStore(tmp_path)
+    info = store.save(_png(lambda d: d.rectangle([0, 0, 99, 99], fill=(128, 128, 128))))
+    obj = {"type": "image", "image": info["id"], "layer": "i", "x": 0, "y": 0, "w": 100, "h": 50}
+    layer = {**IMG_LAYER, "dither": "grayscale"}
+    g = generate_gcode({"layers": [layer], "objects": [obj]}, image_loader=store.load).gcode
+    powers = {float(v) for v in re.findall(r"S([\d.]+)", g)} - {0.0}
+    assert powers and all(100 < p < 500 for p in powers)  # mid grey between min and max
+    plain = generate_gcode({"layers": [layer], "objects": [obj]}, image_loader=store.load, out=False)
+    assert plain.bounds[2] == pytest.approx(50, abs=0.6)  # only the grey half burns
+    inv = generate_gcode({"layers": [layer], "objects": [{**obj, "invert": True}]}, image_loader=store.load, out=False)
+    assert inv.bounds[2] == pytest.approx(100, abs=0.6)  # inverted: the white half burns too
+
+
+def test_image_layer_rules(tmp_path):
+    with pytest.raises(DesignError):
+        generate_gcode({"layers": [IMG_LAYER], "objects": [{"type": "rect", "layer": "i", "x": 0, "y": 0, "w": 1, "h": 1}]})
+    with pytest.raises(DesignError):
+        generate_gcode({"layers": [CUT], "objects": [{"type": "image", "image": "ab", "layer": "c", "x": 0, "y": 0, "w": 1, "h": 1}]},
+                       image_loader=lambda i: None)
+
+
+def test_image_api(client):  # noqa: F811
+    r = client.post("/api/images", files={"file": ("box.png", _png(lambda d: d.rectangle([10, 10, 60, 60], fill="black")))})
+    info = r.json()
+    assert r.status_code == 200 and info["px_width"] == 200
+    assert client.get(f"/api/images/{info['id']}").headers["content-type"] == "image/png"
+    assert client.post("/api/images", files={"file": ("x.png", b"not an image")}).status_code == 422
+    design = {"name": "pic", "layers": [IMG_LAYER], "objects": [
+        {"type": "image", "image": info["id"], "layer": "i", "x": 0, "y": 0, "w": 40, "h": 20}]}
+    prev = client.post("/api/design/preview", json=design).json()
+    assert prev["toolpaths"][0]["images"] and prev["est_seconds"] > 0
+    made = client.post("/api/design/gcode", json={"design": design}).json()
+    assert made["name"] == "pic.gcode"
+    b = client.get("/api/jobs/pic.gcode/bounds").json()
+    assert b["xmin"] == pytest.approx(2, abs=0.5)  # frame covers only the burned box, not the overscan
