@@ -6,6 +6,7 @@ A small Python web server for running a GRBL laser engraver from a Raspberry Pi,
 - **Jobs**: upload G-code (from LightBurn, LaserGRBL, Inkscape, etc.), frame it (laser off, or on at 1% so you can see the outline on the material), then run, pause, resume, or stop it, with progress, time remaining and an estimated finish time
 - **Machine control**: home, unlock, jog (buttons or arrow keys), set and go to the work origin, live position and state
 - **Design**: draw rectangles, ellipses, lines and text, import SVGs, or import photos and images to engrave, right in the browser, with rulers and snapping. Put shapes on layers, each with its own mode (line/cut, fill/engrave, or both), power %, speed, passes, fill line interval and angle. Preview the real laser paths with a time estimate, then make G-code that appears in the job list
+- **Material presets**: save a layer's power, speed, passes, mode and line interval as a named preset per material (e.g. "3mm plywood – Cut"), apply it to any layer in one click, export/import them
 - **Test pattern**: a labelled grid of squares at different powers and speeds, with adjustable ranges, grid size, square size and position, to find the right settings for a material
 - **Machine log**: GRBL responses and errors, plus a box for one-off commands (`$$`, `$I`, …)
 
@@ -51,6 +52,17 @@ Open **Design** in the top bar.
    Each image also has **Invert**, **Brightness** and **Contrast** in the Object panel.
 4. **Snap** (top right of the canvas): *Grid* snaps to the chosen spacing; *Objects* lines shapes up with other shapes' edges and centres and with the bed's edges and centre (cyan guides show it). Hold **Alt** while dragging to ignore snapping. The rulers show mm, the cursor position and the selected object's extent.
 5. **Preview** shows the actual laser paths, estimated time and size. **Make G-code** saves the design and creates `<name>.gcode` in the job list. Then go to **Control**, frame it and run it.
+
+### Material presets
+
+Open a layer's ▾ settings:
+
+- **★ Apply a preset…** fills in the layer's mode, power, speed, passes and line interval (plus dither/overscan for image presets). The layer shows **★ Material – Name** while it still matches, or **☆ Changed from …** if you've tweaked it, with an **Update preset** button.
+- **Save as preset…** saves the layer's settings with a material, a name and optional notes. You can adjust the values in that dialog before saving.
+
+**★ Presets** (top of the Layers panel) lists them by material, where you can apply one to the current layer, edit, delete, and **Export…**/**Import…** them as a JSON file (importing updates presets with the same material and name). In the **Test pattern** panel, **Save its settings as a preset…** lets you record the square you liked.
+
+Presets are stored on the Pi in `~/laser-designs/presets.json`, so every browser sees the same list.
 
 ### Test pattern
 
@@ -138,6 +150,8 @@ The tests use a simulated GRBL controller (`tests/fake_grbl.py`) to check stream
 | POST | `/api/design/gcode` | `{"design": …, "filename": "x"}` → writes `x.gcode` to jobs |
 | POST | `/api/text`, `/api/import/svg` | Text outline; SVG → polylines (mm) |
 | POST/GET | `/api/images`, `/api/images/{id}` | Upload an image for engraving / fetch it |
+| GET/POST/PUT/DELETE | `/api/presets[/{id}]` | Material presets `{material, name, notes, settings: {mode, power, speed (mm/min), passes, hatch, …}}` |
+| GET/POST | `/api/presets/export`, `/api/presets/import` | Download / upload presets as JSON |
 | POST | `/api/test-pattern/{preview,gcode,design}` | Test pattern from `{power_min, power_max, power_steps, speed_min, speed_max, speed_steps, cell, gap, …}` (speeds in mm/s) |
 
 Interactive API docs: `http://laser-server.local:8000/docs`.

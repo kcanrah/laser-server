@@ -286,10 +286,185 @@ function renderOverlay() {
   drawRulers();
 }
 
+const MODE_NAMES = { line: "Line", fill: "Fill", "fill+line": "Fill+Line", image: "Image" };
 function layerSummary(l) {
-  const mode = { line: "Line", fill: "Fill", "fill+line": "Fill+Line", image: "Image" }[l.mode];
-  return `${mode} · ${l.power}% · ${toMmS(l.speed)} mm/s · ${l.passes}×`;
+  const p = linkedPreset(l);
+  const star = p ? (presetMatches(l, p) ? "★ " : "☆ ") : "";
+  return `${star}${MODE_NAMES[l.mode]} · ${l.power}% · ${toMmS(l.speed)} mm/s · ${l.passes}×`;
 }
+
+// ---------------------------------------------------------------- presets
+let presets = [];
+const PRESET_KEYS = ["mode", "power", "min_power", "speed", "passes", "hatch", "angle", "dither", "overscan", "bidirectional"];
+const presetLabel = (p) => (p.material ? `${p.material} – ${p.name}` : p.name);
+const linkedPreset = (l) => (l.preset ? presets.find((p) => p.id === l.preset) : null);
+
+function presetMatches(l, p) {
+  return Object.entries(p.settings).every(([k, v]) =>
+    typeof v === "number" ? Math.abs((l[k] ?? NaN) - v) < 1e-6 : l[k] === v);
+}
+
+function presetSummary(st) {
+  let out = `${MODE_NAMES[st.mode]} · ${st.power}% · ${toMmS(st.speed)} mm/s · ${st.passes}×`;
+  if (st.mode !== "line" && st.hatch) out += ` · ${st.hatch} mm`;
+  if (st.mode === "image" && st.dither) out += ` · ${{ floyd: "dithered", threshold: "threshold", grayscale: "grayscale" }[st.dither]}`;
+  return out;
+}
+
+const layerSettings = (l) => Object.fromEntries(PRESET_KEYS.filter((k) => l[k] !== undefined).map((k) => [k, l[k]]));
+
+async function loadPresets() {
+  try { presets = await api("GET", "/api/presets", undefined, { quiet: true }); } catch { presets = []; }
+}
+
+function presetOptionsHTML(filterImage) {
+  const groups = {};
+  for (const p of presets) {
+    if (filterImage !== null && (p.settings.mode === "image") !== filterImage) continue;
+    (groups[p.material || "Other"] ||= []).push(p);
+  }
+  const esc = (t) => t.replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+  return Object.entries(groups).map(([m, ps]) =>
+    `<optgroup label="${esc(m)}">${ps.map((p) => `<option value="${p.id}">${esc(p.name)} — ${esc(presetSummary(p.settings))}</option>`).join("")}</optgroup>`).join("");
+}
+
+function applyPreset(l, p) {
+  const hasObjects = design.objects.some((o) => o.layer === l.id);
+  if (hasObjects && (p.settings.mode === "image") !== isImageLayer(l)) {
+    toast(p.settings.mode === "image" ? "That's an image preset; this layer has shapes." : "That's a shape preset; this layer has images.");
+    return;
+  }
+  checkpoint();
+  Object.assign(l, p.settings);
+  l.preset = p.id;
+  if (/^Layer \d+$/.test(l.name) || !l.name) l.name = presetLabel(p);
+  changed({ layers: true });
+  toast(`Applied preset "${presetLabel(p)}"`, "info");
+}
+
+// Preset editor. opts: {settings, preset (to edit), layer (to link after saving), material}
+let presetCtx = null;
+function openPresetDialog(opts) {
+  presetCtx = opts;
+  const f = $("#preset-form");
+  const st = { ...(opts.preset?.settings || {}), ...(opts.settings || {}) };
+  f.elements.material.value = opts.preset?.material ?? opts.material ?? "";
+  f.elements.name.value = opts.preset?.name ?? opts.name ?? "";
+  f.elements.notes.value = opts.preset?.notes ?? "";
+  f.elements.mode.value = st.mode || "line";
+  f.elements.power.value = st.power ?? 50;
+  f.elements.speed.value = toMmS(st.speed ?? 1200);
+  f.elements.passes.value = st.passes ?? 1;
+  f.elements.hatch.value = st.hatch ?? 0.1;
+  presetCtx.base = st;
+  const mats = [...new Set(presets.map((p) => p.material).filter(Boolean))];
+  $("#material-list").innerHTML = mats.map((m) => `<option value="${m.replace(/"/g, "&quot;")}">`).join("");
+  const target = opts.preset || (opts.layer && linkedPreset(opts.layer));
+  $("#preset-title").textContent = opts.preset ? "Edit preset" : "Save as preset";
+  const upd = $("#preset-update");
+  upd.classList.toggle("hidden", !target);
+  if (target) { upd.textContent = `Update "${presetLabel(target)}"`; presetCtx.target = target; }
+  $("#preset-save").textContent = opts.preset ? "Save as a copy" : "Save as new preset";
+  syncPresetForm();
+  $("#preset-dialog").showModal();
+  (f.elements.material.value ? f.elements.name : f.elements.material).focus();
+}
+
+function syncPresetForm() {
+  const mode = $("#preset-form").elements.mode.value;
+  $(".pf-interval").classList.toggle("hidden", mode === "line");
+}
+$("#preset-form").elements.mode.addEventListener("change", syncPresetForm);
+
+function presetFromForm() {
+  const f = $("#preset-form").elements;
+  const num = (n) => parseFloat(f[n].value);
+  const settings = { ...presetCtx.base, mode: f.mode.value, power: num("power"), speed: fromMmS(num("speed")),
+    passes: Math.round(num("passes")) };
+  if (f.mode.value !== "line") settings.hatch = num("hatch") || 0.1;
+  if (f.mode.value === "image") { settings.dither ||= "floyd"; settings.overscan ??= 2; settings.min_power ??= 0; settings.bidirectional ??= true; }
+  return { material: f.material.value.trim(), name: f.name.value.trim(), notes: f.notes.value.trim(), settings };
+}
+
+async function submitPreset(update) {
+  const data = presetFromForm();
+  if (!data.name) { toast("Give the preset a name"); return; }
+  if (!update && presets.some((p) => p.material.toLowerCase() === data.material.toLowerCase() && p.name.toLowerCase() === data.name.toLowerCase())
+      && !confirm(`There's already a "${presetLabel(data)}" preset. Save another one with the same name?`)) return;
+  try {
+    const saved = update
+      ? await api("PUT", `/api/presets/${presetCtx.target.id}`, data)
+      : await api("POST", "/api/presets", data);
+    await loadPresets();
+    const l = presetCtx.layer;
+    if (l) {
+      // Link the layer to the preset; if the user edited values in the dialog, apply them.
+      if (!presetMatches(l, saved)) { checkpoint(); Object.assign(l, saved.settings); }
+      l.preset = saved.id;
+      changed({ layers: true });
+    } else renderLayers();
+    $("#preset-dialog").close();
+    if ($("#presets-dialog").open) renderPresetList();
+    toast(`${update ? "Updated" : "Saved"} preset "${presetLabel(saved)}"`, "info");
+  } catch {}
+}
+$("#preset-save").onclick = () => submitPreset(false);
+$("#preset-update").onclick = () => submitPreset(true);
+$("#preset-cancel").onclick = () => $("#preset-dialog").close();
+
+function renderPresetList() {
+  const box = $("#preset-list");
+  box.innerHTML = presets.length ? "" : `<p class="dim small">No presets yet. Open a layer's ▾ settings and click "Save as preset…", or save one from a test pattern.</p>`;
+  const groups = {};
+  for (const p of presets) (groups[p.material || "Other"] ||= []).push(p);
+  for (const [m, ps] of Object.entries(groups)) {
+    const g = document.createElement("div");
+    g.className = "preset-group";
+    g.innerHTML = "<h3></h3>";
+    g.querySelector("h3").textContent = m;
+    for (const p of ps) {
+      const it = document.createElement("div");
+      it.className = "preset-item";
+      it.innerHTML = `<div class="info"><div class="nm"></div><div class="sum"></div><div class="notes"></div></div>
+        <button class="use" title="Apply to the current layer">Apply</button><button class="ed">Edit</button><button class="danger del">Delete</button>`;
+      it.querySelector(".nm").textContent = p.name;
+      it.querySelector(".sum").textContent = presetSummary(p.settings);
+      it.querySelector(".notes").textContent = p.notes || "";
+      it.querySelector(".use").onclick = () => {
+        const l = layerById(currentLayer);
+        if (l) { applyPreset(l, p); expandedLayer = l.id; renderLayers(); }
+      };
+      it.querySelector(".ed").onclick = () => openPresetDialog({ preset: p });
+      it.querySelector(".del").onclick = async () => {
+        if (!confirm(`Delete preset "${presetLabel(p)}"?`)) return;
+        try { await api("DELETE", `/api/presets/${p.id}`); await loadPresets(); renderPresetList(); renderLayers(); } catch {}
+      };
+      g.appendChild(it);
+    }
+    box.appendChild(g);
+  }
+}
+
+$("#btn-presets").onclick = async () => {
+  await loadPresets();
+  renderPresetList();
+  $("#presets-dialog").showModal();
+};
+$("#presets-close").onclick = () => $("#presets-dialog").close();
+$("#preset-import").addEventListener("change", async (e) => {
+  const file = e.target.files[0];
+  e.target.value = "";
+  if (!file) return;
+  const fd = new FormData();
+  fd.append("file", file);
+  try {
+    const r = await api("POST", "/api/presets/import", fd);
+    await loadPresets();
+    renderPresetList();
+    renderLayers();
+    toast(`Imported ${r.imported} preset(s)`, "info");
+  } catch {}
+});
 
 function renderLayers() {
   const box = $("#layers");
@@ -385,6 +560,30 @@ function renderLayers() {
         afterLoad();
         changed({ layers: true });
       });
+      // Presets: apply one, see which one the layer came from, save the layer's settings.
+      const linked = linkedPreset(l);
+      const hasObjs = design.objects.some((o) => o.layer === l.id);
+      const pr = document.createElement("div");
+      pr.innerHTML = `
+        <div class="preset-row">
+          <select class="preset-sel" title="Apply saved settings for a material"><option value="">★ Apply a preset…</option>
+            ${presetOptionsHTML(hasObjs ? isImageLayer(l) : null)}</select>
+          <button class="small-btn save-preset" title="Save this layer's settings as a material preset">Save as preset…</button>
+        </div>
+        ${linked ? `<div class="preset-link ${presetMatches(l, linked) ? "" : "modified"}">
+            <span></span>${presetMatches(l, linked) ? "" : `<button class="small-btn upd-preset">Update preset</button>`}</div>` : ""}`;
+      if (linked) pr.querySelector(".preset-link span").textContent =
+        presetMatches(l, linked) ? `★ ${presetLabel(linked)}` : `☆ Changed from ${presetLabel(linked)}`;
+      pr.querySelector(".preset-sel").addEventListener("change", (e) => {
+        const p = presets.find((x) => x.id === e.target.value);
+        if (p) applyPreset(l, p);
+      });
+      pr.querySelector(".save-preset").addEventListener("click", () =>
+        openPresetDialog({ layer: l, settings: layerSettings(l), material: linked?.material,
+          name: linked ? linked.name : /^Layer \d+$/.test(l.name) ? "" : l.name }));
+      pr.querySelector(".upd-preset")?.addEventListener("click", () =>
+        openPresetDialog({ layer: l, settings: layerSettings(l), material: linked.material, name: linked.name }));
+      body.querySelector("label.full").after(...pr.children);
       div.appendChild(body);
     }
     box.appendChild(div);
@@ -1206,6 +1405,12 @@ $("#btn-test-make").onclick = async () => {
   }
 };
 
+$("#btn-test-preset").onclick = () => {
+  const p = testParams();
+  openPresetDialog({ settings: { mode: p.mode, power: p.power_max, speed: fromMmS(p.speed_min), passes: p.passes, hatch: p.interval } });
+  toast("Set the power and speed of the square you liked, then save.", "info");
+};
+
 $("#btn-test-open").onclick = async () => {
   if (dirty && design.objects.length && !confirm("Replace the current design? Unsaved changes will be lost.")) return;
   try {
@@ -1223,6 +1428,7 @@ $("#btn-test-open").onclick = async () => {
 
 // -------------------------------------------------------------------- init
 async function init() {
+  await loadPresets();
   try { machine = await api("GET", "/api/machine"); bed = { w: machine.bed_width, h: machine.bed_height }; } catch {}
   try { fonts = await api("GET", "/api/fonts"); } catch {}
   const fs = $("#p-font");

@@ -22,6 +22,7 @@ from .design import DesignError, generate_gcode
 from .gcode import job_bounds
 from .grbl import Grbl, GrblError
 from .images import ImageError, ImageStore
+from .presets import PresetError, PresetStore
 from .testpattern import TestPattern, build as build_test_pattern
 from .importers import ImportError_, default_font, list_fonts, svg_to_paths, text_to_paths
 
@@ -67,6 +68,7 @@ def create_app(settings: Optional[Settings] = None, grbl: Optional[Grbl] = None,
     settings.jobs_dir.mkdir(parents=True, exist_ok=True)
     settings.designs_dir.mkdir(parents=True, exist_ok=True)
     images = ImageStore(settings.designs_dir / "images")
+    presets = PresetStore(settings.designs_dir / "presets.json")
     grbl = grbl or Grbl(settings.serial_port, settings.baud)
     if camera is None:
         camera = Camera(settings.camera_device, settings.camera_width,
@@ -107,6 +109,7 @@ def create_app(settings: Optional[Settings] = None, grbl: Optional[Grbl] = None,
     @app.exception_handler(DesignError)
     @app.exception_handler(ImportError_)
     @app.exception_handler(ImageError)
+    @app.exception_handler(PresetError)
     async def design_error(_: Request, exc: Exception):
         return JSONResponse({"detail": str(exc)}, status_code=422)
 
@@ -354,6 +357,39 @@ def create_app(settings: Optional[Settings] = None, grbl: Optional[Grbl] = None,
         finally:
             tmp.unlink(missing_ok=True)
         return {"name": name, **_stats(result)}
+
+    # -------------------------------------------------------------- presets
+    @app.get("/api/presets")
+    def list_presets():
+        return presets.list()
+
+    @app.post("/api/presets")
+    def create_preset(data: dict):
+        return presets.save(data)
+
+    @app.put("/api/presets/{preset_id}")
+    def update_preset(preset_id: str, data: dict):
+        return presets.save(data, preset_id)
+
+    @app.delete("/api/presets/{preset_id}")
+    def delete_preset(preset_id: str):
+        presets.delete(preset_id)
+        return {"ok": True}
+
+    @app.get("/api/presets/export")
+    def export_presets():
+        body = json.dumps({"version": 1, "presets": presets.list()}, indent=1)
+        return Response(body, media_type="application/json",
+                        headers={"Content-Disposition": 'attachment; filename="laser-presets.json"'})
+
+    @app.post("/api/presets/import")
+    async def import_presets(file: UploadFile = File(...)):
+        try:
+            data = json.loads((await file.read(5 * 1024 * 1024)).decode("utf-8"))
+        except (ValueError, UnicodeDecodeError) as e:
+            raise HTTPException(422, f"Not a presets file: {e}")
+        items = data.get("presets") if isinstance(data, dict) else data
+        return {"imported": presets.import_many(items)}
 
     @app.post("/api/test-pattern/design")
     def test_pattern_design(p: TestPattern):

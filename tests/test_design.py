@@ -246,3 +246,40 @@ def test_test_pattern(client):  # noqa: F811
     assert g.count("; Layer") == 6
     assert client.post("/api/test-pattern/preview", json={"power_min": 90, "power_max": 10}).status_code == 422
     assert client.post("/api/test-pattern/preview", json={"cell": 0}).status_code == 422
+
+
+def test_presets_api(client, tmp_path):  # noqa: F811
+    assert client.get("/api/presets").json() == []
+    cut = {"material": "3mm plywood", "name": "Cut", "notes": "air assist on",
+           "settings": {"mode": "line", "power": 100, "speed": 300, "passes": 2, "junk": 1}}
+    r = client.post("/api/presets", json=cut)
+    assert r.status_code == 200
+    p = r.json()
+    assert p["settings"] == {"mode": "line", "power": 100.0, "speed": 300.0, "passes": 2}  # unknown keys dropped
+    eng = client.post("/api/presets", json={"material": "3mm plywood", "name": "Engrave",
+                                             "settings": {"mode": "fill", "power": 30, "speed": 6000, "passes": 1, "hatch": 0.1}}).json()
+    acr = client.post("/api/presets", json={"material": "Acrylic", "name": "Engrave",
+                                             "settings": {"mode": "fill", "power": 20, "speed": 3000, "passes": 1}}).json()
+    names = [(x["material"], x["name"]) for x in client.get("/api/presets").json()]
+    assert names == [("3mm plywood", "Cut"), ("3mm plywood", "Engrave"), ("Acrylic", "Engrave")]  # sorted
+
+    upd = client.put(f"/api/presets/{p['id']}", json={**cut, "settings": {**cut["settings"], "passes": 3}}).json()
+    assert upd["id"] == p["id"] and upd["settings"]["passes"] == 3
+    assert client.delete(f"/api/presets/{acr['id']}").status_code == 200
+    assert client.delete(f"/api/presets/{acr['id']}").status_code == 422
+
+    # validation
+    for bad in ({"name": "", "settings": {"mode": "line", "power": 1, "speed": 1, "passes": 1}},
+                {"name": "x", "settings": {"mode": "laser", "power": 1, "speed": 1, "passes": 1}},
+                {"name": "x", "settings": {"mode": "line", "power": 1, "speed": 0, "passes": 1}}):
+        assert client.post("/api/presets", json=bad).status_code == 422
+
+    # export -> import into an empty store merges by material+name
+    exported = client.get("/api/presets/export")
+    assert "attachment" in exported.headers["content-disposition"]
+    client.delete(f"/api/presets/{eng['id']}")
+    r = client.post("/api/presets/import", files={"file": ("p.json", exported.content)})
+    assert r.json()["imported"] == 2
+    after = client.get("/api/presets").json()
+    assert len(after) == 2 and {x["name"] for x in after} == {"Cut", "Engrave"}
+    assert client.post("/api/presets/import", files={"file": ("p.json", b"nope")}).status_code == 422

@@ -40,6 +40,7 @@ def fake():
 def client(tmp_path, fake):
     settings = Settings()
     settings.jobs_dir = tmp_path / "jobs"
+    settings.designs_dir = tmp_path / "designs"
     grbl = Grbl("/dev/fake", serial_factory=lambda port, baud: fake, poll_interval=0.05)
     app = create_app(settings, grbl=grbl, camera=NoCamera())
     with TestClient(app) as c:
@@ -116,6 +117,7 @@ def test_frame_and_bad_names(client, fake):
 def test_password(tmp_path, fake):
     settings = Settings()
     settings.jobs_dir = tmp_path / "jobs"
+    settings.designs_dir = tmp_path / "designs"
     settings.password = "secret"
     grbl = Grbl("/dev/fake", serial_factory=lambda p, b: fake)
     with TestClient(create_app(settings, grbl=grbl, camera=NoCamera())) as c:

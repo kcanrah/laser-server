@@ -66,7 +66,9 @@
 
     <aside class="side">
       <section class="panel">
-        <div class="panel-head"><h2>Layers</h2><button id="btn-add-layer" class="small-btn">+ Layer</button></div>
+        <div class="panel-head"><h2>Layers</h2>
+          <div><button id="btn-presets" class="small-btn" title="Manage material presets">★ Presets</button>
+          <button id="btn-add-layer" class="small-btn">+ Layer</button></div></div>
         <div id="layers"></div>
         <div id="machine-note" class="small dim"></div>
       </section>
@@ -151,9 +153,47 @@
       </div>
     </form>
     <div id="test-summary" class="test-summary small"></div>
+    <div class="test-save small">
+      Found the right square?
+      <button id="btn-test-preset" class="small-btn" type="button">★ Save its settings as a preset…</button>
+    </div>
     <div class="row buttons">
       <button id="btn-test-open" title="Load the pattern into the editor as a design you can change">Open as design</button>
       <button id="btn-test-make" class="primary">Make G-code</button>
+    </div>
+  </dialog>
+
+  <dialog id="preset-dialog">
+    <form id="preset-form" class="panel-form" method="dialog">
+      <h2 id="preset-title">Save preset</h2>
+      <div class="grid2">
+        <label>Material <input name="material" list="material-list" placeholder="e.g. 3mm plywood" autocomplete="off"></label>
+        <label>Name <input name="name" placeholder="e.g. Cut, Engrave" autocomplete="off" required></label>
+        <label>Mode <select name="mode">
+          <option value="line">Line (cut/score)</option><option value="fill">Fill (engrave)</option>
+          <option value="fill+line">Fill + Line</option><option value="image">Image (raster)</option></select></label>
+        <label>Power % <input name="power" type="number" min="0" max="100" step="1" required></label>
+        <label>Speed mm/s <input name="speed" type="number" min="0.1" step="0.1" required></label>
+        <label>Passes <input name="passes" type="number" min="1" max="100" step="1" required></label>
+        <label class="pf-interval">Line interval mm <input name="hatch" type="number" min="0.01" step="0.01"></label>
+      </div>
+      <label class="full">Notes <textarea name="notes" rows="2" placeholder="Optional: laser, lens, air assist, result…"></textarea></label>
+      <datalist id="material-list"></datalist>
+      <div class="row buttons">
+        <button type="button" id="preset-cancel">Cancel</button>
+        <button type="button" id="preset-update" class="hidden"></button>
+        <button type="button" id="preset-save" class="primary">Save as new preset</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="presets-dialog" class="presets-dialog">
+    <div class="panel-head"><h2>Material presets</h2><button id="presets-close" class="small-btn">✕</button></div>
+    <p class="small dim">Apply a preset from a layer's ▾ settings. Save one from a layer with "Save as preset…".</p>
+    <div id="preset-list"></div>
+    <div class="row">
+      <a class="button small-btn" href="/api/presets/export" download>Export…</a>
+      <label class="button small-btn">Import…<input id="preset-import" type="file" accept=".json,application/json" hidden></label>
     </div>
   </dialog>
 
