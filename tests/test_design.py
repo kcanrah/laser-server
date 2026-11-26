@@ -217,3 +217,32 @@ def test_image_api(client):  # noqa: F811
     assert made["name"] == "pic.gcode"
     b = client.get("/api/jobs/pic.gcode/bounds").json()
     assert b["xmin"] == pytest.approx(2, abs=0.5)  # frame covers only the burned box, not the overscan
+
+
+def test_test_pattern(client):  # noqa: F811
+    from laser_server.importers import text_to_paths
+    from laser_server.testpattern import TestPattern, build
+
+    p = TestPattern(power_min=20, power_max=80, power_steps=4, speed_min=10, speed_max=50, speed_steps=3,
+                    cell=8, gap=2, x=5, y=5)
+    d = build(p, text_to_paths)
+    cells = [l for l in d["layers"] if l["id"].startswith("t")]
+    assert len(cells) == 12
+    assert sorted({l["power"] for l in cells}) == [20, 40, 60, 80]
+    assert sorted({l["speed"] for l in cells}) == [10 * 60, 30 * 60, 50 * 60]  # stored as mm/min
+    # top row is the slowest; columns go up in power left to right
+    rects = {o["layer"]: o for o in d["objects"] if o["type"] == "rect"}
+    assert rects["t0_0"]["y"] > rects["t2_0"]["y"] and rects["t0_0"]["x"] < rects["t0_3"]["x"]
+    assert rects["t0_1"]["x"] - rects["t0_0"]["x"] == pytest.approx(10)
+    # labels sit left of / above the grid, never below or left of the origin
+    assert min(o["x"] for o in d["objects"]) == pytest.approx(5, abs=0.01)
+    assert min(o["y"] for o in d["objects"]) == pytest.approx(5, abs=0.01)
+
+    prev = client.post("/api/test-pattern/preview", json=p.model_dump() if hasattr(p, "model_dump") else p.dict()).json()
+    assert prev["est_seconds"] > 0 and len(prev["toolpaths"]) == 13
+    r = client.post("/api/test-pattern/gcode", json={"power_steps": 3, "speed_steps": 2, "labels": False}).json()
+    assert r["name"] == "test-pattern.gcode"
+    g = client.get("/api/jobs/test-pattern.gcode").text
+    assert g.count("; Layer") == 6
+    assert client.post("/api/test-pattern/preview", json={"power_min": 90, "power_max": 10}).status_code == 422
+    assert client.post("/api/test-pattern/preview", json={"cell": 0}).status_code == 422

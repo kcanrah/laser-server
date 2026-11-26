@@ -22,6 +22,7 @@ from .design import DesignError, generate_gcode
 from .gcode import job_bounds
 from .grbl import Grbl, GrblError
 from .images import ImageError, ImageStore
+from .testpattern import TestPattern, build as build_test_pattern
 from .importers import ImportError_, default_font, list_fonts, svg_to_paths, text_to_paths
 
 STATIC_DIR = Path(__file__).parent / "static"
@@ -353,6 +354,34 @@ def create_app(settings: Optional[Settings] = None, grbl: Optional[Grbl] = None,
         finally:
             tmp.unlink(missing_ok=True)
         return {"name": name, **_stats(result)}
+
+    @app.post("/api/test-pattern/design")
+    def test_pattern_design(p: TestPattern):
+        return build_test_pattern(p, text_to_paths)
+
+    @app.post("/api/test-pattern/preview")
+    def test_pattern_preview(p: TestPattern):
+        d = build_test_pattern(p, text_to_paths)
+        result = _generate(d, out=False)
+        for tp in result.toolpaths:
+            tp["paths"] = [[(round(x, 2), round(y, 2)) for x, y in pl] for pl in tp["paths"]]
+        return {"toolpaths": result.toolpaths, "size": d["size"], **_stats(result)}
+
+    @app.post("/api/test-pattern/gcode")
+    def test_pattern_gcode(p: TestPattern):
+        d = build_test_pattern(p, text_to_paths)
+        name = "test-pattern.gcode"
+        if grbl.job.running and grbl.job.name == name:
+            raise HTTPException(409, "The test pattern is running")
+        dest = settings.jobs_dir / name
+        tmp = dest.with_suffix(".gcode.part")
+        try:
+            with tmp.open("w") as f:
+                result = _generate(d, out=f)
+            tmp.replace(dest)
+        finally:
+            tmp.unlink(missing_ok=True)
+        return {"name": name, "size": d["size"], **_stats(result)}
 
     @app.post("/api/images")
     async def upload_image(file: UploadFile = File(...)):

@@ -18,6 +18,7 @@
     <button id="btn-open">Open…</button>
     <button id="btn-save">Save</button>
     <label class="button">Import SVG<input id="import-svg" type="file" accept=".svg,image/svg+xml" hidden></label>
+    <button id="btn-test" title="Grid of squares at different powers and speeds to find settings for a material">Test pattern…</button>
     <button id="btn-preview" title="Show the actual laser paths">Preview</button>
     <button id="btn-send" class="primary" title="Generate G-code and add it to the job list">Make G-code</button>
   </header>
@@ -46,6 +47,7 @@
           <g id="grid"></g>
           <g id="objects"></g>
           <g id="toolpaths"></g>
+          <g id="testpreview"></g>
           <g id="overlay"></g>
         </g>
       </svg>
@@ -113,6 +115,46 @@
     <h2>Open design</h2>
     <table id="design-list"><tbody></tbody></table>
     <div class="row"><button id="btn-close-open">Close</button></div>
+  </dialog>
+
+  <dialog id="test-dialog" class="test-dialog">
+    <div class="panel-head"><h2>Test pattern</h2><button id="btn-test-close" class="small-btn" title="Close">✕</button></div>
+    <p class="small dim">Power changes across the columns and speed changes down the rows. Each square is labelled. Burn it on scrap of your material and pick the square that looks right.</p>
+    <form id="test-form" class="panel-form">
+      <label class="full">Mode
+        <select name="mode"><option value="fill">Fill (engrave squares)</option><option value="line">Line (outline / cut test)</option><option value="fill+line">Fill + outline</option></select>
+      </label>
+      <div class="grid3">
+        <span class="lbl">Power %</span><span class="lbl">Speed mm/s</span><span></span>
+        <label>Min <input name="power_min" type="number" min="0" max="100" step="1"></label>
+        <label>Min <input name="speed_min" type="number" min="0.1" step="1"></label>
+        <span></span>
+        <label>Max <input name="power_max" type="number" min="0" max="100" step="1"></label>
+        <label>Max <input name="speed_max" type="number" min="0.1" step="1"></label>
+        <span></span>
+        <label>Columns <input name="power_steps" type="number" min="1" max="20" step="1"></label>
+        <label>Rows <input name="speed_steps" type="number" min="1" max="20" step="1"></label>
+        <span></span>
+      </div>
+      <div class="grid2">
+        <label>Square size mm <input name="cell" type="number" min="1" max="200" step="1"></label>
+        <label>Gap mm <input name="gap" type="number" min="0" max="50" step="0.5"></label>
+        <label>Passes <input name="passes" type="number" min="1" max="20" step="1"></label>
+        <label>Line interval mm <input name="interval" type="number" min="0.02" step="0.01"></label>
+        <label>Position X mm <input name="x" type="number" step="1"></label>
+        <label>Position Y mm <input name="y" type="number" step="1"></label>
+      </div>
+      <label class="check-row"><input name="labels" type="checkbox"> Engrave labels</label>
+      <div class="grid2" id="label-opts">
+        <label>Label power % <input name="label_power" type="number" min="0" max="100" step="1"></label>
+        <label>Label speed mm/s <input name="label_speed" type="number" min="0.1" step="1"></label>
+      </div>
+    </form>
+    <div id="test-summary" class="test-summary small"></div>
+    <div class="row buttons">
+      <button id="btn-test-open" title="Load the pattern into the editor as a design you can change">Open as design</button>
+      <button id="btn-test-make" class="primary">Make G-code</button>
+    </div>
   </dialog>
 
   <div id="toast" class="toast hidden"></div>

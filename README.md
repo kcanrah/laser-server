@@ -6,6 +6,7 @@ A small Python web server for running a GRBL laser engraver from a Raspberry Pi,
 - **Jobs**: upload G-code (from LightBurn, LaserGRBL, Inkscape, etc.), frame it (laser off, or on at 1% so you can see the outline on the material), then run, pause, resume, or stop it, with progress, time remaining and an estimated finish time
 - **Machine control**: home, unlock, jog (buttons or arrow keys), set and go to the work origin, live position and state
 - **Design**: draw rectangles, ellipses, lines and text, import SVGs, or import photos and images to engrave, right in the browser, with rulers and snapping. Put shapes on layers, each with its own mode (line/cut, fill/engrave, or both), power %, speed, passes, fill line interval and angle. Preview the real laser paths with a time estimate, then make G-code that appears in the job list
+- **Test pattern**: a labelled grid of squares at different powers and speeds, with adjustable ranges, grid size, square size and position, to find the right settings for a material
 - **Machine log**: GRBL responses and errors, plus a box for one-off commands (`$$`, `$I`, …)
 
 G-code is streamed with GRBL's character-counting protocol, so the controller's 128-byte buffer stays full and engraving stays smooth.
@@ -50,6 +51,17 @@ Open **Design** in the top bar.
    Each image also has **Invert**, **Brightness** and **Contrast** in the Object panel.
 4. **Snap** (top right of the canvas): *Grid* snaps to the chosen spacing; *Objects* lines shapes up with other shapes' edges and centres and with the bed's edges and centre (cyan guides show it). Hold **Alt** while dragging to ignore snapping. The rulers show mm, the cursor position and the selected object's extent.
 5. **Preview** shows the actual laser paths, estimated time and size. **Make G-code** saves the design and creates `<name>.gcode` in the job list. Then go to **Control**, frame it and run it.
+
+### Test pattern
+
+**Test pattern…** on the Design page opens a panel to burn a grid of squares, with power changing across the columns and speed changing down the rows. Each square is labelled with its values. Set:
+
+- Power % and speed (mm/s) ranges and the number of columns and rows (up to 20 × 20)
+- Square size and gap (the overall size and estimated time update as you type), passes, fill line interval
+- Mode: fill (engraving), line (outlines, for cut tests; add passes), or both
+- Position on the bed, and whether to engrave labels (with their own power and speed)
+
+The pattern is previewed on the bed. **Make G-code** creates `test-pattern.gcode` in the job list; **Open as design** loads it into the editor (one layer per square) if you want to change anything.
 
 Positions are in mm from the work origin (bottom-left, Y up), the same as the machine. Use **Set origin here** on the Control page to put the origin where your material's corner is.
 
@@ -126,5 +138,6 @@ The tests use a simulated GRBL controller (`tests/fake_grbl.py`) to check stream
 | POST | `/api/design/gcode` | `{"design": …, "filename": "x"}` → writes `x.gcode` to jobs |
 | POST | `/api/text`, `/api/import/svg` | Text outline; SVG → polylines (mm) |
 | POST/GET | `/api/images`, `/api/images/{id}` | Upload an image for engraving / fetch it |
+| POST | `/api/test-pattern/{preview,gcode,design}` | Test pattern from `{power_min, power_max, power_steps, speed_min, speed_max, speed_steps, cell, gap, …}` (speeds in mm/s) |
 
 Interactive API docs: `http://laser-server.local:8000/docs`.

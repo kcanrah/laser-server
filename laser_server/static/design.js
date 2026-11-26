@@ -47,15 +47,17 @@ function toast(msg, kind = "error", html = false) {
   toast._t = setTimeout(() => t.classList.add("hidden"), html ? 8000 : 4000);
 }
 
-async function api(method, url, body) {
+async function api(method, url, body, { quiet = false } = {}) {
   const opts = { method, headers: {} };
   if (body instanceof FormData) opts.body = body;
   else if (body !== undefined) { opts.headers["Content-Type"] = "application/json"; opts.body = JSON.stringify(body); }
   const res = await fetch(url, opts);
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
-    const msg = typeof data.detail === "string" ? data.detail : `${res.status} ${res.statusText}`;
-    toast(msg);
+    const msg = typeof data.detail === "string" ? data.detail
+      : Array.isArray(data.detail) ? data.detail.map((d) => `${d.loc?.at(-1) ?? ""}: ${d.msg}`).join("; ")
+      : `${res.status} ${res.statusText}`;
+    if (!quiet) toast(msg);
     throw new Error(msg);
   }
   return data;
@@ -1108,6 +1110,115 @@ $("#btn-send").onclick = async () => {
     btn.innerHTML = label;
     document.body.classList.remove("busy");
   }
+};
+
+// ----------------------------------------------------------- test pattern
+const TEST_KEY = "laser-server.testPattern";
+const TEST_DEFAULTS = { mode: "fill", power_min: 10, power_max: 100, power_steps: 5, speed_min: 20, speed_max: 100,
+  speed_steps: 5, cell: 10, gap: 2, passes: 1, interval: 0.1, x: 10, y: 10, labels: true, label_power: 20, label_speed: 40 };
+let testTimer = null;
+let testSeq = 0;
+
+function testParams() {
+  const f = $("#test-form");
+  const p = {};
+  for (const [k, def] of Object.entries(TEST_DEFAULTS)) {
+    const inp = f.elements[k];
+    if (typeof def === "boolean") p[k] = inp.checked;
+    else if (typeof def === "number") { const v = parseFloat(inp.value); p[k] = Number.isFinite(v) ? v : def; }
+    else p[k] = inp.value;
+  }
+  p.power_steps = Math.round(p.power_steps);
+  p.speed_steps = Math.round(p.speed_steps);
+  p.passes = Math.round(p.passes);
+  return p;
+}
+
+function loadTestForm() {
+  let saved = {};
+  try { saved = JSON.parse(localStorage.getItem(TEST_KEY) || "{}"); } catch {}
+  const p = { ...TEST_DEFAULTS, ...saved };
+  const f = $("#test-form");
+  for (const [k, v] of Object.entries(p)) {
+    const inp = f.elements[k];
+    if (!inp) continue;
+    if (inp.type === "checkbox") inp.checked = !!v; else inp.value = v;
+  }
+  $("#label-opts").classList.toggle("hidden", !p.labels);
+}
+
+function clearTestPreview() { $("#testpreview").innerHTML = ""; }
+
+async function updateTestPreview() {
+  const p = testParams();
+  try { localStorage.setItem(TEST_KEY, JSON.stringify(p)); } catch {}
+  $("#label-opts").classList.toggle("hidden", !p.labels);
+  const seq = ++testSeq;
+  const sum = $("#test-summary");
+  sum.innerHTML = `<span class="spinner"></span>Calculating…`;
+  let r;
+  try { r = await api("POST", "/api/test-pattern/preview", p, { quiet: true }); }
+  catch (e) { if (seq === testSeq) sum.textContent = e.message; return; }
+  if (seq !== testSeq || !$("#test-dialog").open) return;
+  const g = $("#testpreview");
+  g.innerHTML = "";
+  for (const tp of r.toolpaths) if (tp.paths.length) el("path", { d: polyD(tp.paths), stroke: tp.color }, g);
+  if (r.bounds) {
+    const [x0, y0, x1, y1] = r.bounds;
+    el("rect", { x: x0, y: y0, width: x1 - x0, height: y1 - y0 }, g);
+    const outside = x0 < 0 || y0 < 0 || x1 > bed.w || y1 > bed.h;
+    sum.innerHTML = `Size <b>${(x1 - x0).toFixed(1)} × ${(y1 - y0).toFixed(1)} mm</b> · ${p.power_steps * p.speed_steps} squares · ` +
+      `est. <b>${fmtTime(r.est_seconds)}</b>` + (outside ? `<br><span style="color:#ff8b8b">Extends outside the bed — move or shrink it.</span>` : "");
+  }
+}
+
+function scheduleTestPreview() {
+  clearTimeout(testTimer);
+  testTimer = setTimeout(updateTestPreview, 300);
+}
+
+$("#btn-test").onclick = () => {
+  const dlg = $("#test-dialog");
+  if (dlg.open) { dlg.close(); return; }
+  loadTestForm();
+  dlg.show();
+  updateTestPreview();
+};
+$("#test-dialog").addEventListener("close", () => { clearTestPreview(); testSeq++; });
+$("#btn-test-close").onclick = () => $("#test-dialog").close();
+$("#test-form").addEventListener("input", scheduleTestPreview);
+$("#test-form").addEventListener("change", scheduleTestPreview);
+$("#test-form").addEventListener("submit", (e) => e.preventDefault());
+
+$("#btn-test-make").onclick = async () => {
+  const btn = $("#btn-test-make");
+  if (btn.disabled) return;
+  const label = btn.innerHTML;
+  btn.disabled = true;
+  btn.innerHTML = `<span class="spinner"></span>Generating…`;
+  try {
+    const r = await api("POST", "/api/test-pattern/gcode", testParams());
+    toast(`Created <b>${r.name}</b> (${r.size[0].toFixed(0)} × ${r.size[1].toFixed(0)} mm, est. ${fmtTime(r.est_seconds)}) ` +
+          `<a href="/">Go to Control to frame &amp; run →</a>`, "info", true);
+  } catch {} finally {
+    btn.disabled = false;
+    btn.innerHTML = label;
+  }
+};
+
+$("#btn-test-open").onclick = async () => {
+  if (dirty && design.objects.length && !confirm("Replace the current design? Unsaved changes will be lost.")) return;
+  try {
+    const d = await api("POST", "/api/test-pattern/design", testParams());
+    delete d.size; delete d.extent;
+    checkpoint();
+    design = d;
+    selectedId = null;
+    afterLoad();
+    changed({ layers: true });
+    $("#test-dialog").close();
+    toast("Test pattern opened as a design. Each square is its own layer.", "info");
+  } catch {}
 };
 
 // -------------------------------------------------------------------- init
