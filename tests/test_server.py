@@ -121,3 +121,40 @@ def test_password(tmp_path, fake):
     with TestClient(create_app(settings, grbl=grbl, camera=NoCamera())) as c:
         assert c.get("/api/status").status_code == 401
         assert c.get("/api/status", auth=("me", "secret")).status_code == 200
+
+
+def test_estimate_job(tmp_path):
+    from laser_server.gcode import estimate_job
+
+    p = tmp_path / "e.gcode"
+    p.write_text("; comment\nG21 G90\nG0 X60 F9999\nG1 X60 Y60 F600 S100\nG1 X0 Y60\nG4 P2\n$H\n")
+    n, cum = estimate_job(p, rapid_mm_min=6000)
+    assert n == 6  # comment-only line dropped
+    # 60mm rapid at 6000 = 0.6s; 2 x 60mm at 600 = 12s; dwell 2s
+    assert cum[-1] == pytest.approx(0.6 + 12 + 2)
+
+
+def test_running_job_reports_remaining(client, fake):
+    fake.line_time = 0.01
+    lines = "\n".join(f"G1 X{i % 2 * 10} F600" for i in range(300))  # 300 x 10mm at 600mm/min = 300s est
+    client.post("/api/jobs", files={"file": ("est.gcode", lines.encode())})
+    client.post("/api/jobs/est.gcode/run")
+    assert wait_for(lambda: client.get("/api/status").json()["job"]["remaining"] is not None)
+    j = client.get("/api/status").json()["job"]
+    assert j["est_total"] == pytest.approx(299, abs=2) and 0 < j["remaining"] <= 300
+    client.post("/api/job/stop")
+
+
+def test_frame_with_laser(client, fake):
+    client.post("/api/jobs", files={"file": ("f2.gcode", b"G0X10Y10\nG1X20Y10S500\nG1X20Y30\n")})
+    assert client.post("/api/jobs/f2.gcode/frame?laser=true").status_code == 200
+    assert wait_for(lambda: "M5S0" in fake.received_lines)
+    rx = fake.received_lines
+    i = rx.index("M3S10")  # 1% of S1000
+    assert rx[i - 1] == "G90G21G0X10.000Y10.000"  # moved there with the laser off
+    assert rx[i + 1:i + 5] == ["G1X20.000Y10.000F3000", "G1X20.000Y30.000F3000", "G1X10.000Y30.000F3000", "G1X10.000Y10.000F3000"]
+    # default stays laser-off jogging
+    fake.received_lines.clear()
+    client.post("/api/jobs/f2.gcode/frame")
+    assert wait_for(lambda: "$J=G90G21X10.000Y10.000F3000" in fake.received_lines)
+    assert not any(l.startswith("M3") for l in fake.received_lines)

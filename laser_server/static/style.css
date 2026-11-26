@@ -73,3 +73,23 @@ input, select { background: #111418; color: var(--text); border: 1px solid #3a43
   border: 1px solid var(--bad); padding: 10px 16px; border-radius: 8px; z-index: 10; max-width: 90vw;
 }
 .toast.info { background: #1d3a4a; border-color: #3a7aa0; }
+
+.small-btn { padding: 4px 8px; font-size: 13px; }
+.cam-actions { display: flex; gap: 10px; align-items: center; }
+.cam-hud, .cam-fs-buttons { display: none; }
+.cam-wrap:fullscreen { aspect-ratio: auto; border-radius: 0; width: 100vw; height: 100vh; }
+.cam-wrap:fullscreen .cam-hud {
+  display: block; position: absolute; left: 16px; bottom: 16px; background: rgba(0,0,0,.6);
+  padding: 6px 12px; border-radius: 8px; font-size: 16px; font-variant-numeric: tabular-nums;
+}
+.cam-wrap:fullscreen .cam-fs-buttons { display: flex; gap: 10px; position: absolute; top: 16px; right: 16px; }
+.cam-wrap:fullscreen .cam-fs-buttons button { font-size: 18px; }
+.cam-wrap:fullscreen #btn-exit-fullscreen { background: rgba(0,0,0,.6); }
+.remaining { margin-top: 8px; font-size: 18px; font-variant-numeric: tabular-nums; }
+.remaining .dim { font-size: 13px; }
+.frame-opt { display: flex; align-items: center; gap: 6px; margin-bottom: 8px; color: var(--dim); cursor: pointer; }
+.spinner {
+  display: inline-block; width: 12px; height: 12px; border: 2px solid currentColor; border-right-color: transparent;
+  border-radius: 50%; animation: spin .7s linear infinite; vertical-align: -1px; margin-right: 6px;
+}
+@keyframes spin { to { transform: rotate(360deg); } }

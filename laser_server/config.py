@@ -30,4 +30,6 @@ class Settings:
     jobs_dir: Path = Path(_env("LASER_JOBS_DIR", str(Path.home() / "laser-jobs"))).expanduser()
     # If set, the UI and API require HTTP basic auth with this password (any username).
     password: str = _env("LASER_PASSWORD", "")
+    # Laser power (% of $30) used for "Frame with laser on"; capped at 5%.
+    frame_power: float = float(_env("LASER_FRAME_POWER", "1"))
     max_upload_mb: int = int(_env("LASER_MAX_UPLOAD_MB", "200"))

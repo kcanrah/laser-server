@@ -2,6 +2,8 @@ body.design-page { height: 100vh; display: flex; flex-direction: column; overflo
 .name-input { width: 200px; font-weight: 600; }
 button.primary { background: #7a3a0c; border-color: var(--accent); }
 button.primary:hover { background: #95470f; }
+button.primary:disabled { opacity: .85; cursor: progress; }
+body.busy, body.busy * { cursor: progress !important; }
 button.active { background: #3b2a1c; border-color: var(--accent); color: #ffd2b0; }
 
 .design-layout { flex: 1; display: grid; grid-template-columns: 64px minmax(0, 1fr) 320px; min-height: 0; }

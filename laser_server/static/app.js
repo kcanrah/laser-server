@@ -76,6 +76,17 @@ function render(s) {
 
   const j = s.job;
   const running = j.running;
+  $("#frame-power").textContent = s.frame_power;
+  const rem = $("#job-remaining");
+  if (running && j.preparing) {
+    rem.innerHTML = `<span class="spinner"></span>Preparing job…`;
+  } else if (running && j.remaining != null) {
+    const done = new Date(Date.now() + j.remaining * 1000).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+    rem.innerHTML = `~${fmtTime(j.remaining)} left <span class="dim">· done ≈ ${done}${j.paused ? " (paused)" : ""} · est. total ${fmtTime(j.est_total)}</span>`;
+  } else rem.textContent = "";
+  $("#cam-hud").textContent = running
+    ? `${s.state} · ${j.percent}%${j.remaining != null ? ` · ~${fmtTime(j.remaining)} left` : ""}`
+    : `${s.state} · X ${fmt(s.wpos[0])} Y ${fmt(s.wpos[1])}`;
   $("#job-name").textContent = j.name ? `${j.name}${running ? (j.paused ? " (paused)" : " (running)") : ""}` : "No job running";
   $("#job-name").classList.toggle("dim", !running);
   $("#job-bar").style.width = `${j.percent}%`;
@@ -158,9 +169,11 @@ async function loadFiles() {
       actions.appendChild(b); actions.append(" ");
     };
     mk("Frame", "frame", async () => {
+      const laser = $("#frame-laser").checked;
       try {
-        const b = await api("POST", `/api/jobs/${enc}/frame`);
-        toast(`Framing ${b.xmin.toFixed(1)},${b.ymin.toFixed(1)} → ${b.xmax.toFixed(1)},${b.ymax.toFixed(1)} (laser off)`, "info");
+        const b = await api("POST", `/api/jobs/${enc}/frame?laser=${laser}`);
+        toast(`Framing ${b.xmin.toFixed(1)},${b.ymin.toFixed(1)} → ${b.xmax.toFixed(1)},${b.ymax.toFixed(1)} ` +
+              (laser ? `(laser on at ${status?.frame_power ?? 1}%)` : "(laser off)"), "info");
       } catch {}
     });
     mk("Run", "run", () => {
@@ -217,6 +230,26 @@ $("#cmd-form").addEventListener("submit", (e) => {
   if (!cmd) return;
   post("/api/command", { command: cmd });
   $("#cmd").value = "";
+});
+
+// -------------------------------------------------------------- fullscreen
+function toggleFullscreen() {
+  const wrap = $("#cam-wrap");
+  if (document.fullscreenElement) document.exitFullscreen();
+  else if (wrap.requestFullscreen) wrap.requestFullscreen().catch(() => toast("Fullscreen isn't available in this browser"));
+  else if (wrap.webkitRequestFullscreen) wrap.webkitRequestFullscreen();  // iOS Safari
+}
+$("#btn-fullscreen").onclick = toggleFullscreen;
+$("#btn-exit-fullscreen").onclick = toggleFullscreen;
+$("#btn-fs-stop").onclick = () => post("/api/reset");
+$("#cam").addEventListener("dblclick", toggleFullscreen);
+document.addEventListener("keydown", (e) => {
+  if (!e.target.matches("input, select, textarea") && e.key.toLowerCase() === "f") toggleFullscreen();
+});
+
+try { $("#frame-laser").checked = localStorage.getItem("laser-server.frameLaser") === "1"; } catch {}
+$("#frame-laser").addEventListener("change", () => {
+  try { localStorage.setItem("laser-server.frameLaser", $("#frame-laser").checked ? "1" : "0"); } catch {}
 });
 
 startCamera();

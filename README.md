@@ -2,8 +2,8 @@
 
 A small Python web server for running a GRBL laser engraver from a Raspberry Pi, with a live view from a USB webcam.
 
-- **Live camera**: MJPEG stream of the bed, plus snapshots
-- **Jobs**: upload G-code (from LightBurn, LaserGRBL, Inkscape, etc.), frame it with the laser off, then run, pause, resume, or stop it, with a progress readout
+- **Live camera**: MJPEG stream of the bed, snapshots, and fullscreen (button, **F**, or double-click) with a progress overlay and a STOP button
+- **Jobs**: upload G-code (from LightBurn, LaserGRBL, Inkscape, etc.), frame it (laser off, or on at 1% so you can see the outline on the material), then run, pause, resume, or stop it, with progress, time remaining and an estimated finish time
 - **Machine control**: home, unlock, jog (buttons or arrow keys), set and go to the work origin, live position and state
 - **Design**: draw rectangles, ellipses, lines and text, import SVGs, or import photos and images to engrave, right in the browser, with rulers and snapping. Put shapes on layers, each with its own mode (line/cut, fill/engrave, or both), power %, speed, passes, fill line interval and angle. Preview the real laser paths with a time estimate, then make G-code that appears in the job list
 - **Machine log**: GRBL responses and errors, plus a box for one-off commands (`$$`, `$I`, …)
@@ -76,6 +76,9 @@ Edit `/etc/laser-server.env` and run `sudo systemctl restart laser-server`.
 | `LASER_S_MAX` | `1000` | Power at 100% if GRBL doesn't report `$30` |
 | `LASER_PASSWORD` | *(empty)* | If set, requires HTTP basic auth with this password |
 | `LASER_MAX_UPLOAD_MB` | `200` | Upload size limit |
+| `LASER_FRAME_POWER` | `1` | Power % for "Laser on while framing" (max 5) |
+
+Time remaining is estimated from the file (distance ÷ feed for every move) when the job starts, then corrected by how fast the job is actually going once it's been running a little while.
 
 Useful checks on the Pi: `ls /dev/serial/by-id/` for the laser, `v4l2-ctl --list-devices` for the camera.
 
@@ -84,7 +87,7 @@ Useful checks on the Pi: `ls /dev/serial/by-id/` for the laser, `v4l2-ctl --list
 - **STOP** (top right) sends a GRBL soft reset, which stops motion and turns the laser off immediately.
 - **Stop job** does a feed hold first, then a reset, so GRBL keeps its position.
 - If GRBL reports an `error:` during a job, the job is halted rather than continued.
-- **Frame** traces the job's bounding box with `M5` (laser off) using jog moves.
+- **Frame** traces the job's bounding box with `M5` (laser off) using jog moves. With **Laser on while framing** ticked it traces with `M3` at `LASER_FRAME_POWER` % (default 1%, capped at 5%) and turns the laser off at the end.
 - Jogging and console commands are refused while a job is running.
 - There is no authentication by default. Keep it on a trusted network, or set `LASER_PASSWORD`. Never leave a running laser unattended.
 

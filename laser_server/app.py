@@ -131,6 +131,7 @@ def create_app(settings: Optional[Settings] = None, grbl: Optional[Grbl] = None,
     def status():
         data = grbl.snapshot()
         data["camera"] = {"available": camera.available, "error": camera.error}
+        data["frame_power"] = settings.frame_power
         return data
 
     @app.get("/api/console")
@@ -225,11 +226,11 @@ def create_app(settings: Optional[Settings] = None, grbl: Optional[Grbl] = None,
         return {"xmin": b[0], "ymin": b[1], "xmax": b[2], "ymax": b[3]}
 
     @app.post("/api/jobs/{name}/frame")
-    def frame(name: str, feed: float = 3000):
+    def frame(name: str, feed: float = 3000, laser: bool = False):
         b = job_bounds(job_path(name))
         if b is None:
             raise HTTPException(422, "No moves found in file")
-        grbl.frame(b, feed)
+        grbl.frame(b, feed, settings.frame_power if laser else 0.0)
         return {"xmin": b[0], "ymin": b[1], "xmax": b[2], "ymax": b[3]}
 
     @app.post("/api/jobs/{name}/run")

@@ -938,11 +938,17 @@ function schedulePreview() {
   previewTimer = setTimeout(runPreview, 400);
 }
 
+let previewSeq = 0;
 async function runPreview() {
   const g = $("#toolpaths");
+  const seq = ++previewSeq;
+  const stats = $("#stats");
+  stats.classList.remove("hidden");
+  const spin = setTimeout(() => { if (seq === previewSeq) stats.innerHTML = `<span class="spinner"></span>Updating preview…`; }, 300);
   let res;
-  try { res = await api("POST", "/api/design/preview", design); } catch { return; }
-  if (!previewOn) return;
+  try { res = await api("POST", "/api/design/preview", design); } catch { clearTimeout(spin); stats.textContent = "Preview failed"; return; }
+  clearTimeout(spin);
+  if (!previewOn || seq !== previewSeq) return;
   g.innerHTML = "";
   for (const tp of res.toolpaths) {
     if (tp.paths.length) el("path", { d: polyD(tp.paths), stroke: tp.color }, g);
@@ -952,8 +958,6 @@ async function runPreview() {
       node.setAttribute("href", im.href);
     }
   }
-  const stats = $("#stats");
-  stats.classList.remove("hidden");
   if (!res.bounds) { stats.textContent = "Nothing to burn (no objects on enabled layers)"; return; }
   const [x0, y0, x1, y1] = res.bounds;
   const outside = x0 < -0.01 || y0 < -0.01 || x1 > bed.w + 0.01 || y1 > bed.h + 0.01;
@@ -1081,13 +1085,29 @@ $("#import-image").addEventListener("change", async (e) => {
 
 // ------------------------------------------------------------- make G-code
 $("#btn-send").onclick = async () => {
+  const btn = $("#btn-send");
+  if (btn.disabled) return;
   design.name = $("#design-name").value.trim() || "untitled";
+  const label = btn.innerHTML;
+  btn.disabled = true;
+  btn.innerHTML = `<span class="spinner"></span>Generating…`;
+  document.body.classList.add("busy");
+  const t0 = Date.now();
+  const tick = setInterval(() => {
+    const s = Math.round((Date.now() - t0) / 1000);
+    btn.innerHTML = `<span class="spinner"></span>Generating… ${s}s`;
+  }, 1000);
   try {
     await api("PUT", `/api/designs/${encodeURIComponent(design.name)}`, design);
     dirty = false;
     const r = await api("POST", "/api/design/gcode", { design, filename: design.name });
     toast(`Created <b>${r.name}</b> · est. ${fmtTime(r.est_seconds)} <a href="/">Go to Control to frame &amp; run →</a>`, "info", true);
-  } catch {}
+  } catch {} finally {
+    clearInterval(tick);
+    btn.disabled = false;
+    btn.innerHTML = label;
+    document.body.classList.remove("busy");
+  }
 };
 
 // -------------------------------------------------------------------- init

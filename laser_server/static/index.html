@@ -21,11 +21,19 @@
     <section class="camera card">
       <div class="card-head">
         <h2>Camera</h2>
-        <a href="/camera/snapshot.jpg" target="_blank" class="small">Snapshot</a>
+        <div class="cam-actions">
+          <a href="/camera/snapshot.jpg" target="_blank" class="small">Snapshot</a>
+          <button id="btn-fullscreen" class="small-btn" title="Fullscreen (F)">⛶ Fullscreen</button>
+        </div>
       </div>
-      <div class="cam-wrap">
+      <div class="cam-wrap" id="cam-wrap">
         <img id="cam" alt="Camera stream">
         <div id="cam-msg" class="cam-msg hidden"></div>
+        <div id="cam-hud" class="cam-hud"></div>
+        <div class="cam-fs-buttons">
+          <button id="btn-fs-stop" class="danger big" title="Soft reset: stops everything and turns the laser off">STOP</button>
+          <button id="btn-exit-fullscreen" title="Exit fullscreen (Esc)">✕</button>
+        </div>
       </div>
     </section>
 
@@ -67,6 +75,7 @@
       <div id="job-name" class="dim">No job running</div>
       <div class="progress"><div id="job-bar"></div></div>
       <div class="row small"><span id="job-lines"></span><span id="job-time"></span></div>
+      <div id="job-remaining" class="remaining"></div>
       <div class="row buttons">
         <button id="btn-pause">Pause</button>
         <button id="btn-resume">Resume</button>
@@ -82,6 +91,9 @@
           <input id="upload" type="file" accept=".gcode,.gc,.nc,.ngc,.g,.txt" hidden>
         </label>
       </div>
+      <label class="frame-opt small" title="Frame with the laser on at very low power so you can see the outline on the material">
+        <input id="frame-laser" type="checkbox"> <span>Laser on while framing (<span id="frame-power">1</span>%)</span>
+      </label>
       <div id="upload-status" class="small dim"></div>
       <table id="files"><tbody></tbody></table>
     </section>

@@ -60,13 +60,38 @@ class JobState:
     started_at: Optional[float] = None
     finished_at: Optional[float] = None
     result: Optional[str] = None  # "completed" | "stopped" | "error: ..."
+    preparing: bool = False
+    est_cum: Optional[object] = None  # array of cumulative estimated seconds per line
+    paused_at: Optional[float] = None
+    paused_total: float = 0.0
 
-    def as_dict(self) -> dict:
+    def remaining(self, feed_override: float = 100.0) -> tuple[Optional[float], Optional[float]]:
+        """(remaining seconds, estimated total seconds) for a running job."""
+        if not self.running or not self.est_cum or not self.started_at:
+            return None, None
+        total = self.est_cum[-1]
+        done_est = self.est_cum[min(self.lines_done, len(self.est_cum)) - 1] if self.lines_done else 0.0
+        left = max(0.0, total - done_est)
+        now = self.paused_at or time.time()
+        active = now - self.started_at - self.paused_total
+        if done_est > 20 and active > 20:
+            # Correct the estimate with how fast the job has actually gone so far
+            # (acceleration, overrides); clamp so a slow start can't run away.
+            left *= min(4.0, max(0.5, active / done_est))
+        else:
+            left *= 100.0 / max(feed_override, 10.0)
+        return left, total
+
+    def as_dict(self, feed_override: float = 100.0) -> dict:
         elapsed = None
         if self.started_at:
             elapsed = (self.finished_at or time.time()) - self.started_at
         pct = (100.0 * self.lines_done / self.total_lines) if self.total_lines else 0.0
+        remaining, est_total = self.remaining(feed_override)
         return {
+            "preparing": self.preparing,
+            "remaining": round(remaining) if remaining is not None else None,
+            "est_total": round(est_total) if est_total is not None else None,
             "name": self.name,
             "total_lines": self.total_lines,
             "lines_sent": self.lines_sent,
@@ -426,28 +451,60 @@ class Grbl:
             if self.job.running:
                 self._finish_job("stopped")
 
-    def frame(self, bounds: tuple, feed: float = 3000) -> None:
-        """Trace the job's bounding box with the laser OFF."""
+    def frame(self, bounds: tuple, feed: float = 3000, power_pct: float = 0.0) -> None:
+        """Trace the job's bounding box. With power_pct 0 the laser stays off
+        (jog moves); otherwise it is on at that % of $30 so you can see it."""
         self._require_idle_for_manual()
         xmin, ymin, xmax, ymax = bounds
+        corners = ((xmin, ymin), (xmax, ymin), (xmax, ymax), (xmin, ymax), (xmin, ymin))
         self._send_line("M5")
-        for x, y in ((xmin, ymin), (xmax, ymin), (xmax, ymax), (xmin, ymax), (xmin, ymin)):
-            self._send_line(f"$J=G90G21X{x:.3f}Y{y:.3f}F{feed:.0f}")
+        if power_pct <= 0:
+            for x, y in corners:
+                self._send_line(f"$J=G90G21X{x:.3f}Y{y:.3f}F{feed:.0f}")
+            return
+        s = max(1.0, round(self.setting(30, 1000) * min(power_pct, 5.0) / 100.0, 1))
+        self._send_line(f"G90G21G0X{xmin:.3f}Y{ymin:.3f}")
+        self._send_line(f"M3S{s:g}")  # constant power so corners show too
+        for x, y in corners[1:]:
+            self._send_line(f"G1X{x:.3f}Y{y:.3f}F{feed:.0f}")
+        self._send_line("M5S0")
 
     # ------------------------------------------------------------------ jobs
     def start_job(self, path: Path) -> None:
         self._require_idle_for_manual()
         if self.status.state.startswith("Alarm"):
             raise GrblError("Controller is in alarm state; home or unlock first")
-        lines = [ln for ln in (clean_gcode_line(r) for r in path.read_text(errors="replace").splitlines()) if ln]
-        if not lines:
-            raise GrblError("File contains no G-code")
+        if not path.is_file():
+            raise GrblError("No such job file")
         with self._lock:
-            self.job = JobState(name=path.name, total_lines=len(lines), running=True, started_at=time.time())
+            self.job = JobState(name=path.name, running=True, preparing=True)
             self._job_stop.clear()
-        self._log("info", f"Starting job {path.name} ({len(lines)} lines)")
-        t = threading.Thread(target=self._stream_job, args=(lines,), daemon=True, name="job")
+        t = threading.Thread(target=self._prepare_and_stream, args=(path,), daemon=True, name="job")
         t.start()
+
+    def _prepare_and_stream(self, path: Path) -> None:
+        """Scan the file once (line count + time estimate), then stream it
+        lazily so big raster jobs don't have to fit in memory."""
+        from .gcode import estimate_job, iter_job_lines
+
+        try:
+            n, cum = estimate_job(path, self.setting(110, 6000) or 6000)
+        except OSError as e:
+            with self._lock:
+                self._finish_job(f"error: {e}")
+            return
+        with self._lock:
+            if not self.job.running or self._job_stop.is_set():
+                return
+            if n == 0:
+                self._finish_job("error: file contains no G-code")
+                return
+            self.job.total_lines = n
+            self.job.est_cum = cum
+            self.job.preparing = False
+            self.job.started_at = time.time()
+        self._log("info", f"Starting job {path.name} ({n} lines, est. {cum[-1] / 60:.1f} min)")
+        self._stream_job(iter_job_lines(path))
 
     def _stream_job(self, lines: Iterable[str]) -> None:
         try:
@@ -475,6 +532,7 @@ class Grbl:
                     self._finish_job(f"error: {e}")
 
     def _finish_job(self, result: str) -> None:
+        self.job.preparing = False
         self.job.running = False
         self.job.paused = False
         self.job.finished_at = time.time()
@@ -485,13 +543,18 @@ class Grbl:
         if not self.job.running:
             raise GrblError("No job running")
         self.feed_hold()
-        self.job.paused = True
+        if not self.job.paused:
+            self.job.paused = True
+            self.job.paused_at = time.time()
 
     def resume_job(self) -> None:
         if not self.job.running:
             raise GrblError("No job running")
         self.cycle_start()
+        if self.job.paused_at:
+            self.job.paused_total += time.time() - self.job.paused_at
         self.job.paused = False
+        self.job.paused_at = None
 
     def stop_job(self) -> None:
         """Stop a running job and turn the laser off."""
@@ -537,5 +600,5 @@ class Grbl:
                     "bed_height": self.setting(131, 0) or None,
                     "max_rate_x": self.setting(110, 0) or None,
                 },
-                "job": self.job.as_dict(),
+                "job": self.job.as_dict(s.overrides[0] if s.overrides else 100),
             }
