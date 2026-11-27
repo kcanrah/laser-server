@@ -614,6 +614,7 @@ function renderLayers() {
 function renderProps() {
   const o = selected();
   $("#props").classList.toggle("hidden", !o);
+  $("#sizebar").classList.toggle("hidden", !o);
   $("#no-selection").classList.toggle("hidden", !!o);
   if (!o) return;
   const ls = $("#p-layer");
@@ -626,9 +627,11 @@ function renderProps() {
   }
   ls.value = o.layer;
   const active = document.activeElement;
-  for (const [id, v] of [["#p-x", o.x], ["#p-y", o.y], ["#p-w", o.w], ["#p-h", o.h], ["#p-rot", o.rot || 0]]) {
+  for (const [id, v] of [["#p-x", o.x], ["#p-y", o.y], ["#p-w", o.w], ["#p-h", o.h], ["#p-rot", o.rot || 0],
+                         ["#s-x", o.x], ["#s-y", o.y], ["#s-w", o.w], ["#s-h", o.h], ["#s-rot", o.rot || 0]]) {
     if ($(id) !== active) $(id).value = r1(v);
   }
+  if ($("#s-scale") !== active) $("#s-scale").value = "";
   const isImg = o.type === "image";
   $("#image-props").classList.toggle("hidden", !isImg);
   if (isImg) {
@@ -1051,28 +1054,49 @@ document.addEventListener("keyup", (e) => {
 });
 
 // ------------------------------------------------------------ properties
-function bindNumber(id, apply) {
-  $(id).addEventListener("change", () => {
-    const o = selected();
-    const v = parseFloat($(id).value);
-    if (!o || !Number.isFinite(v)) return renderProps();
-    checkpoint();
-    apply(o, v);
-    changed();
-  });
+function bindNumber(ids, apply) {
+  for (const id of [].concat(ids)) {
+    $(id).addEventListener("change", () => {
+      const o = selected();
+      const v = parseFloat($(id).value);
+      if (!o || !Number.isFinite(v)) return renderProps();
+      checkpoint();
+      apply(o, v);
+      changed();
+    });
+  }
 }
-bindNumber("#p-x", (o, v) => (o.x = v));
-bindNumber("#p-y", (o, v) => (o.y = v));
-bindNumber("#p-rot", (o, v) => (o.rot = ((v % 360) + 540) % 360 - 180));
-bindNumber("#p-w", (o, v) => {
+// Width/height keep the object's centre where it is.
+function resizeTo(o, w, h) {
+  const cx = o.x + o.w / 2, cy = o.y + o.h / 2;
+  o.w = r3(w); o.h = r3(h);
+  o.x = r3(cx - o.w / 2); o.y = r3(cy - o.h / 2);
+}
+bindNumber(["#p-x", "#s-x"], (o, v) => (o.x = v));
+bindNumber(["#p-y", "#s-y"], (o, v) => (o.y = v));
+bindNumber(["#p-rot", "#s-rot"], (o, v) => (o.rot = ((v % 360) + 540) % 360 - 180));
+bindNumber(["#p-w", "#s-w"], (o, v) => {
   v = Math.max(0.1, v);
-  if ($("#p-lock").checked && o.w > 0.01) o.h = r3(o.h * (v / o.w));
-  o.w = v;
+  resizeTo(o, v, $("#p-lock").checked && o.w > 0.01 ? o.h * (v / o.w) : o.h);
 });
-bindNumber("#p-h", (o, v) => {
+bindNumber(["#p-h", "#s-h"], (o, v) => {
   v = Math.max(0.1, v);
-  if ($("#p-lock").checked && o.h > 0.01) o.w = r3(o.w * (v / o.h));
-  o.h = v;
+  resizeTo(o, $("#p-lock").checked && o.h > 0.01 ? o.w * (v / o.h) : o.w, v);
+});
+bindNumber("#s-scale", (o, v) => {
+  $("#s-scale").value = "";  // one-shot: don't re-apply on blur or another Enter
+  const k = Math.max(0.01, v / 100);
+  resizeTo(o, Math.max(0.1, o.w * k), o.h > 0.01 ? Math.max(0.1, o.h * k) : o.h);
+});
+function syncLock() { $("#s-lock").classList.toggle("on", $("#p-lock").checked); $("#s-lock").textContent = $("#p-lock").checked ? "🔒" : "🔓"; }
+$("#s-lock").onclick = () => { $("#p-lock").checked = !$("#p-lock").checked; syncLock(); };
+$("#p-lock").addEventListener("change", syncLock);
+syncLock();
+// Enter applies and keeps focus for quick edits; Escape leaves the field.
+$("#sizebar").addEventListener("keydown", (e) => {
+  // (the browser applies the value on Enter itself; just select it for the next edit)
+  if (e.key === "Enter") setTimeout(() => e.target.select?.(), 0);
+  if (e.key === "Escape") e.target.blur();
 });
 $("#p-layer").addEventListener("change", () => {
   const o = selected();

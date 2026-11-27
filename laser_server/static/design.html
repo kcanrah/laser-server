@@ -51,6 +51,19 @@
           <g id="overlay"></g>
         </g>
       </svg>
+      <div id="sizebar" class="sizebar hidden" title="Position and size of the selected object (mm). Press Enter or Tab to apply.">
+        <label>X <input id="s-x" type="number" step="0.1"></label>
+        <label>Y <input id="s-y" type="number" step="0.1"></label>
+        <span class="sep"></span>
+        <label>W <input id="s-w" type="number" step="0.1" min="0.1"></label>
+        <button id="s-lock" class="lock" type="button" title="Keep proportions when changing width or height">🔒</button>
+        <label>H <input id="s-h" type="number" step="0.1" min="0.1"></label>
+        <span class="dim">mm</span>
+        <span class="sep"></span>
+        <label title="Scale the object by a percentage">Scale <input id="s-scale" type="number" step="1" min="1" placeholder="100"> %</label>
+        <span class="sep"></span>
+        <label>↻ <input id="s-rot" type="number" step="1"> °</label>
+      </div>
       <div class="snapbar" title="Hold Alt while dragging to ignore snapping">
         <span class="dim">Snap</span>
         <label><input id="snap-grid" type="checkbox"> Grid</label>

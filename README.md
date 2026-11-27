@@ -43,7 +43,8 @@ journalctl -u laser-server -f
 Open **Design** in the top bar.
 
 1. Pick a layer on the right (that's where new shapes go), then a tool on the left (**R**ect, **E**llipse, **L**ine, **T**ext) and drag on the bed. **Import SVG** brings in drawings from Inkscape, Illustrator, etc. **Image** (or **I**) imports a photo or picture (PNG, JPG, …) to engrave.
-2. Drag to move, use the corner handles to resize and the round handle to rotate (hold Shift to snap to 15°). Exact position, size and rotation are in the Object panel. Arrow keys nudge 1 mm (Shift: 10 mm).
+2. Drag to move, use the corner handles to resize and the round handle to rotate (hold Shift to snap to 15°). Arrow keys nudge 1 mm (Shift: 10 mm).
+   To set an exact size, use the **size bar** that appears above the canvas when something is selected: X, Y, **W** and **H** in mm (🔒 keeps proportions; size changes keep the object centred), **Scale %**, and rotation. Type a value and press Enter or Tab. The same fields are also in the Object panel.
 3. Open a layer's ▾ settings for mode, power, speed (mm/s), passes and, for fill, the line interval and angle. Untick a layer to leave it out.
    **Negative** (fill layers) engraves the background instead of the shapes: a rectangle around everything on the layer, **Border margin** mm larger, is filled with the shapes left unburned, so text and shapes stand out raised (stamps, slate, dark or coated materials). Holes inside letters are burned as expected. With *Fill + Line* the shapes and the border are also traced. (Images have their own **Invert** in the Object panel.)
    Images go on an **Image** layer (created automatically), which has:
