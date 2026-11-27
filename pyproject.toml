@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "laser-server"
-version = "0.6.0"
+version = "0.7.0"
 description = "Web UI for a GRBL laser engraver with a USB camera, for Raspberry Pi"
 readme = "README.md"
 requires-python = ">=3.9"

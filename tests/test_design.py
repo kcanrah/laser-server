@@ -283,3 +283,34 @@ def test_presets_api(client, tmp_path):  # noqa: F811
     after = client.get("/api/presets").json()
     assert len(after) == 2 and {x["name"] for x in after} == {"Cut", "Engrave"}
     assert client.post("/api/presets/import", files={"file": ("p.json", b"nope")}).status_code == 422
+
+
+def test_negative_fill_engraves_background():
+    from laser_server.design import negative_border
+
+    layer = {**FILL, "negative": True, "margin": 5, "hatch": 0.5}
+    d = {"layers": [layer], "objects": [{"type": "rect", "layer": "f", "x": 10, "y": 10, "w": 20, "h": 10}]}
+    r = generate_gcode(d)
+    # burns out to the margin...
+    assert r.bounds[0] == pytest.approx(5) and r.bounds[2] == pytest.approx(35)
+    # ...but never inside the shape (10..30 x 10..20)
+    s, x, y = 0.0, 0.0, 0.0
+    for line in r.gcode.splitlines():
+        m = dict(re.findall(r"([XYS])([-\d.]+)", line))
+        if "S" in m:
+            s = float(m["S"])
+        nx, ny = float(m.get("X", x)), float(m.get("Y", y))
+        if line.startswith("G1") and s > 0 and 10 < ny < 20:
+            # a burning move on a row through the shape stays left or right of it
+            assert max(x, nx) <= 10 + 1e-6 or min(x, nx) >= 30 - 1e-6
+        x, y = nx, ny
+    # text-like holes: a shape with a hole keeps the hole burned (even-odd)
+    outer = [(0, 0), (10, 0), (10, 10), (0, 10), (0, 0)]
+    hole = [(3, 3), (7, 3), (7, 7), (3, 7), (3, 3)]
+    rows = hatch_fill([negative_border([outer, hole], 2), outer, hole], 1.0)
+    mid = [r_ for r_ in rows if abs(r_[0][1] - 5.5) < 1e-6][0]
+    xs = sorted(p[0] for p in mid)
+    assert xs == pytest.approx([-2, 0, 3, 7, 10, 12])  # border, hole, border burn; shape body left
+    # normal (non-negative) fill unchanged
+    plain = generate_gcode({**d, "layers": [{**FILL, "hatch": 0.5}]})
+    assert plain.bounds[0] == pytest.approx(10)

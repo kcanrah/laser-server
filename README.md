@@ -45,6 +45,7 @@ Open **Design** in the top bar.
 1. Pick a layer on the right (that's where new shapes go), then a tool on the left (**R**ect, **E**llipse, **L**ine, **T**ext) and drag on the bed. **Import SVG** brings in drawings from Inkscape, Illustrator, etc. **Image** (or **I**) imports a photo or picture (PNG, JPG, …) to engrave.
 2. Drag to move, use the corner handles to resize and the round handle to rotate (hold Shift to snap to 15°). Exact position, size and rotation are in the Object panel. Arrow keys nudge 1 mm (Shift: 10 mm).
 3. Open a layer's ▾ settings for mode, power, speed (mm/s), passes and, for fill, the line interval and angle. Untick a layer to leave it out.
+   **Negative** (fill layers) engraves the background instead of the shapes: a rectangle around everything on the layer, **Border margin** mm larger, is filled with the shapes left unburned, so text and shapes stand out raised (stamps, slate, dark or coated materials). Holes inside letters are burned as expected. With *Fill + Line* the shapes and the border are also traced. (Images have their own **Invert** in the Object panel.)
    Images go on an **Image** layer (created automatically), which has:
    - **Dither**: *Dithered* (Floyd–Steinberg dots; best for photos), *Threshold* (pure black/white; logos), or *Grayscale* (varies power between **Min** and **Max power**; works on wood with some lasers)
    - **Line interval** (0.1 mm = 254 DPI), **Overscan** (runs past each row's ends with the laser off so speed is even where it burns), **Both directions**

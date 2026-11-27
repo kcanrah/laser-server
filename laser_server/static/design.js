@@ -248,10 +248,27 @@ function renderObjects() {
     const grp = el("g", { "data-id": o.id }, g);
     el("path", { d, stroke: "transparent", "stroke-width": 10, fill: "transparent",
       "vector-effect": "non-scaling-stroke", "pointer-events": "all" }, grp);
-    const fill = layer.mode.includes("fill") ? layer.color + "40" : "none";
+    const fill = layer.mode.includes("fill") && !layer.negative ? layer.color + "40" : "none";
     el("path", { d, stroke: layer.color, fill, class: layer.enabled ? "" : "hidden-layer", "pointer-events": "none" }, grp);
   }
+  renderNegatives(g);
   renderOverlay();
+}
+
+// Negative fill layers: shade a border rectangle with the shapes cut out.
+function renderNegatives(g) {
+  for (const l of design.layers) {
+    if (!l.negative || !l.mode.includes("fill")) continue;
+    const shapes = design.objects.filter((o) => o.layer === l.id).flatMap(objectPolylines);
+    const b = pathsBBox(shapes);
+    if (!b) continue;
+    const m = l.margin ?? 2;
+    const border = [[b[0] - m, b[1] - m], [b[2] + m, b[1] - m], [b[2] + m, b[3] + m], [b[0] - m, b[3] + m], [b[0] - m, b[1] - m]];
+    const neg = el("path", { d: polyD([border, ...shapes]), fill: l.color + "40", stroke: l.color,
+      "stroke-dasharray": "4 3", "fill-rule": "evenodd", "pointer-events": "none",
+      class: l.enabled ? "" : "hidden-layer" });
+    g.insertBefore(neg, g.firstChild);
+  }
 }
 
 function renderOverlay() {
@@ -290,7 +307,7 @@ const MODE_NAMES = { line: "Line", fill: "Fill", "fill+line": "Fill+Line", image
 function layerSummary(l) {
   const p = linkedPreset(l);
   const star = p ? (presetMatches(l, p) ? "★ " : "☆ ") : "";
-  return `${star}${MODE_NAMES[l.mode]} · ${l.power}% · ${toMmS(l.speed)} mm/s · ${l.passes}×`;
+  return `${star}${MODE_NAMES[l.mode]}${l.negative && l.mode.includes("fill") ? " (negative)" : ""} · ${l.power}% · ${toMmS(l.speed)} mm/s · ${l.passes}×`;
 }
 
 // ---------------------------------------------------------------- presets
@@ -504,6 +521,7 @@ function renderLayers() {
       l.min_power ??= 0;
       l.overscan ??= 2;
       l.bidirectional ??= true;
+      l.margin ??= 2;
       body.innerHTML = `
         <label class="full">Name <input data-k="name" type="text"></label>
         <div class="grid2">
@@ -514,7 +532,9 @@ function renderLayers() {
           <label>Speed mm/s <input data-k="speed" type="number" min="0.1" step="1"></label>
           <label>Passes <input data-k="passes" type="number" min="1" max="100" step="1"></label>
           ${fill ? `<label>Line interval mm <input data-k="hatch" type="number" min="0.01" step="0.01"></label>
-          <label>Fill angle° <input data-k="angle" type="number" step="15"></label>` : ""}
+          <label>Fill angle° <input data-k="angle" type="number" step="15"></label>
+          <label class="check" title="Engrave the area around the shapes instead of the shapes, so they stand out raised"><input data-k="negative" type="checkbox"> Negative</label>
+          <label>Border margin mm <input data-k="margin" type="number" min="0" max="500" step="0.5" ${l.negative ? "" : "disabled title='Turn on Negative'"}></label>` : ""}
           ${img ? `<label>Dither <select data-k="dither">
               <option value="floyd">Dithered (photos)</option><option value="threshold">Threshold (B&amp;W)</option>
               <option value="grayscale">Grayscale (power)</option></select></label>
@@ -538,6 +558,7 @@ function renderLayers() {
           if (k === "speed") v = fromMmS(Math.max(0.1, v));
           if (k === "hatch") v = Math.max(0.01, v);
           if (k === "overscan") v = Math.max(0, v);
+          if (k === "margin") v = Math.min(500, Math.max(0, v));
           if (k === "mode" && (v === "image") !== isImageLayer(l) && design.objects.some((o) => o.layer === l.id)) {
             toast(v === "image" ? "Image layers can only hold images. Move this layer's shapes first."
                                 : "This layer has images. Move them to another image layer first.");

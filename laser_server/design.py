@@ -43,6 +43,8 @@ DEFAULT_LAYER = {
     "hatch": 0.1, "angle": 0.0, "enabled": True,
     # image layers
     "min_power": 0.0, "dither": "floyd", "overscan": 2.0, "bidirectional": True,
+    # fill layers: engrave the background (a border around the shapes) instead of the shapes
+    "negative": False, "margin": 2.0,
 }
 
 MAX_SEGMENTS = 2_000_000  # guard against runaway fills on the Pi
@@ -180,6 +182,15 @@ def hatch_fill(polylines: list[Polyline], spacing: float, angle_deg: float = 0.0
     return rows
 
 
+def negative_border(shapes: list[Polyline], margin: float) -> Optional[Polyline]:
+    """Closed rectangle `margin` mm outside the bounding box of `shapes`."""
+    b = bbox(shapes)
+    if b is None:
+        return None
+    x0, y0, x1, y1 = b[0] - margin, b[1] - margin, b[2] + margin, b[3] + margin
+    return [(x0, y0), (x1, y0), (x1, y1), (x0, y1), (x0, y0)]
+
+
 def _order_paths(paths: list[Polyline], start: Point = (0.0, 0.0)) -> list[Polyline]:
     """Greedy nearest-neighbour ordering to cut travel; open paths may be reversed."""
     remaining = list(paths)
@@ -307,6 +318,9 @@ def _validate_layer(raw: dict) -> dict:
     layer["speed"] = float(layer["speed"])
     layer["passes"] = int(layer["passes"])
     layer["overscan"] = max(0.0, float(layer.get("overscan", 0) or 0))
+    layer["margin"] = float(layer.get("margin", 0) or 0)
+    if not 0 <= layer["margin"] <= 500:
+        raise DesignError(f"Layer {name}: negative margin must be 0-500 mm")
     if layer["speed"] <= 0:
         raise DesignError(f"Layer {name}: speed must be > 0")
     if not 1 <= layer["passes"] <= 100:
@@ -384,16 +398,29 @@ def generate_gcode(design: dict, s_max: float = 1000.0, laser_mode: bool = True,
         for obj in objs:
             if obj.get("type") == "image":
                 raise DesignError(f"Images must be on an image layer (layer {lname} is {mode})")
-            pls = object_polylines(obj)
-            if "fill" in mode:
-                fills.extend(hatch_fill(pls, float(layer["hatch"]), float(layer["angle"])))
-            if "line" in mode:
-                outlines.extend(pls)
+        negative = bool(layer.get("negative")) and "fill" in mode
+        if negative:
+            # Fill a rectangle around everything on the layer, with the shapes as
+            # holes (even-odd), so the shapes are left standing and the rest burns.
+            shapes = [pl for obj in objs for pl in object_polylines(obj)]
+            border = negative_border(shapes, float(layer.get("margin", 0) or 0))
+            if border:
+                fills = hatch_fill([border] + shapes, float(layer["hatch"]), float(layer["angle"]))
+                if "line" in mode:
+                    outlines = shapes + [border]
+        else:
+            for obj in objs:
+                pls = object_polylines(obj)
+                if "fill" in mode:
+                    fills.extend(hatch_fill(pls, float(layer["hatch"]), float(layer["angle"])))
+                if "line" in mode:
+                    outlines.extend(pls)
         segments += sum(len(r) for r in fills) + sum(len(p) for p in outlines)
         if segments > MAX_SEGMENTS:
             raise DesignError("Design is too large to generate")
 
-        w.emit(f"; Layer {lname}: {mode}, {layer['power']:g}% (S{s:g}), {f:g} mm/min, {layer['passes']} pass(es)")
+        w.emit(f"; Layer {lname}: {mode}{' (negative)' if negative else ''}, {layer['power']:g}% (S{s:g}), "
+               f"{f:g} mm/min, {layer['passes']} pass(es)")
         for _ in range(layer["passes"]):
             for row in fills:
                 w.travel(row[0])
