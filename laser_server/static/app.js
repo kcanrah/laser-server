@@ -112,10 +112,54 @@ function render(s) {
 }
 
 // ------------------------------------------------------------------ camera
+// MJPEG streams die silently when the computer sleeps, the network drops, or
+// the Pi ends a long stream, so reconnect on wake/visibility and on stalls.
+let camStarted = 0;
 function startCamera() {
-  $("#cam").src = `/camera/stream.mjpg?t=${Date.now()}`;
+  camStarted = Date.now();
+  camSig = null;
+  camSame = 0;
+  $("#cam").src = `/camera/stream.mjpg?t=${camStarted}`;
 }
-$("#cam").addEventListener("error", () => setTimeout(startCamera, 3000));
+function stopCamera() {
+  $("#cam").removeAttribute("src");  // closes the connection; saves the Pi's CPU while hidden
+}
+$("#cam").addEventListener("error", () => {
+  if (!document.hidden) setTimeout(() => { if (Date.now() - camStarted > 2500) startCamera(); }, 3000);
+});
+document.addEventListener("visibilitychange", () => (document.hidden ? stopCamera() : startCamera()));
+window.addEventListener("pageshow", (e) => { if (e.persisted) startCamera(); });
+window.addEventListener("online", startCamera);
+
+// Timers pause while the computer sleeps: a big gap between ticks means we just woke up.
+let lastTick = Date.now();
+setInterval(() => {
+  const now = Date.now();
+  if (now - lastTick > 8000 && !document.hidden) startCamera();
+  lastTick = now;
+}, 2000);
+
+// Stall check: sample the picture; if it hasn't changed for ~8-12 s while the
+// camera is working, the stream is frozen, so restart it.
+const camCanvas = document.createElement("canvas");
+camCanvas.width = 32; camCanvas.height = 18;
+let camSig = null, camSame = 0;
+setInterval(() => {
+  const img = $("#cam");
+  if (document.hidden || !status?.camera?.available || !img.src || Date.now() - camStarted < 5000) return;
+  let sig = "";
+  try {
+    const ctx = camCanvas.getContext("2d", { willReadFrequently: true });
+    ctx.drawImage(img, 0, 0, camCanvas.width, camCanvas.height);
+    const d = ctx.getImageData(0, 0, camCanvas.width, camCanvas.height).data;
+    let h = 0;
+    for (let i = 0; i < d.length; i += 4) h = (h * 31 + d[i] + d[i + 1] * 7 + d[i + 2] * 13) | 0;
+    sig = String(h);
+  } catch { return; }
+  camSame = sig === camSig ? camSame + 1 : 0;
+  camSig = sig;
+  if (camSame >= 2) startCamera();
+}, 4000);
 
 // --------------------------------------------------------------------- jog
 document.querySelectorAll("[data-jog]").forEach((b) => {

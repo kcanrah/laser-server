@@ -438,7 +438,8 @@ def create_app(settings: Optional[Settings] = None, grbl: Optional[Grbl] = None,
     # --------------------------------------------------------------- camera
     @app.get("/camera/stream.mjpg")
     def stream():
-        return StreamingResponse(camera.mjpeg(),
+        gen = camera.mjpeg_async() if hasattr(camera, "mjpeg_async") else camera.mjpeg()
+        return StreamingResponse(gen,
                                  media_type="multipart/x-mixed-replace; boundary=frame",
                                  headers={"Cache-Control": "no-store"})
 

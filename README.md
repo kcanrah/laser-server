@@ -51,7 +51,7 @@ Open **Design** in the top bar.
    - **Dither**: *Dithered* (Floyd–Steinberg dots; best for photos), *Threshold* (pure black/white; logos), or *Grayscale* (varies power between **Min** and **Max power**; works on wood with some lasers)
    - **Line interval** (0.1 mm = 254 DPI), **Overscan** (runs past each row's ends with the laser off so speed is even where it burns), **Both directions**
 
-   Each image also has **Invert**, **Brightness** and **Contrast** in the Object panel.
+   Each image also has **Invert**, **Brightness** and **Contrast** in the Object panel. Transparent areas of PNGs are never burned, whatever those are set to.
 4. **Snap** (top right of the canvas): *Grid* snaps to the chosen spacing; *Objects* lines shapes up with other shapes' edges and centres and with the bed's edges and centre (cyan guides show it). Hold **Alt** while dragging to ignore snapping. The rulers show mm, the cursor position and the selected object's extent.
 5. **Preview** shows the actual laser paths, estimated time and size. **Make G-code** saves the design and creates `<name>.gcode` in the job list. Then go to **Control**, frame it and run it.
 

@@ -84,6 +84,24 @@ class Camera:
     def snapshot(self) -> Optional[bytes]:
         return self._frame
 
+    async def mjpeg_async(self, max_seconds: float = 600):
+        """Async MJPEG generator: no thread is tied up per viewer, and Starlette
+        cancels it when the client disconnects. Streams end after `max_seconds`
+        so connections from sleeping laptops don't linger; the page reconnects."""
+        import asyncio
+
+        last = -1
+        started = time.monotonic()
+        poll = min(0.05, 0.5 / max(self.fps, 1))
+        while not self._stop.is_set() and time.monotonic() - started < max_seconds:
+            frame, fid = self._frame, self._frame_id
+            if frame is None or fid == last:
+                await asyncio.sleep(poll)
+                continue
+            last = fid
+            yield (b"--frame\r\nContent-Type: image/jpeg\r\nContent-Length: "
+                   + str(len(frame)).encode() + b"\r\n\r\n" + frame + b"\r\n")
+
     def mjpeg(self) -> Iterator[bytes]:
         """Yield multipart MJPEG chunks for a StreamingResponse."""
         last = -1

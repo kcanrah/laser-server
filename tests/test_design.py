@@ -314,3 +314,32 @@ def test_negative_fill_engraves_background():
     # normal (non-negative) fill unchanged
     plain = generate_gcode({**d, "layers": [{**FILL, "hatch": 0.5}]})
     assert plain.bounds[0] == pytest.approx(10)
+
+
+def test_transparent_png_never_burns(tmp_path, ):
+    import io
+
+    from PIL import Image, ImageDraw
+
+    from laser_server.images import ImageStore
+
+    # transparent canvas (stored as transparent *black*, like many exports) with a black square
+    im = Image.new("RGBA", (200, 100), (0, 0, 0, 0))
+    ImageDraw.Draw(im).rectangle([50, 25, 149, 74], fill=(0, 0, 0, 255))
+    buf = io.BytesIO()
+    im.save(buf, "PNG")
+    store = ImageStore(tmp_path)
+    info = store.save(buf.getvalue())
+    assert Image.open(store.path(info["id"])).mode == "LA"  # transparency kept
+    obj = {"type": "image", "image": info["id"], "layer": "i", "x": 0, "y": 0, "w": 100, "h": 50}
+    for extra in ({}, {"invert": True}, {"brightness": -100}):
+        r = generate_gcode({"layers": [IMG_LAYER], "objects": [{**obj, **extra}]}, image_loader=store.load, out=False)
+        if extra.get("invert"):
+            # inverted: the opaque square becomes white (nothing to burn), the transparent area still never burns
+            assert r.bounds is None
+        else:
+            assert r.bounds == pytest.approx((25, 12.5, 75, 37.5), abs=0.6)
+    # an opaque PNG is still stored without an alpha channel
+    buf2 = io.BytesIO()
+    Image.new("RGBA", (10, 10), (255, 0, 0, 255)).save(buf2, "PNG")
+    assert Image.open(store.path(store.save(buf2.getvalue())["id"])).mode == "L"

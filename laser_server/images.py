@@ -27,7 +27,8 @@ class ImageStore:
         return self.dir / f"{image_id}.png"
 
     def save(self, data: bytes) -> dict:
-        """Store an upload as greyscale PNG (transparent areas become white)."""
+        """Store an upload as a greyscale PNG, keeping transparency (LA) if it has any.
+        Transparent areas are never burned (see process())."""
         from PIL import Image, ImageOps
 
         try:
@@ -37,11 +38,12 @@ class ImageStore:
         except Exception as e:  # noqa: BLE001
             raise ImageError(f"Could not read image: {e}") from e
         dpi = img.info.get("dpi")
-        if img.mode in ("RGBA", "LA", "P") or "transparency" in img.info:
-            rgba = img.convert("RGBA")
-            bg = Image.new("RGBA", rgba.size, (255, 255, 255, 255))
-            img = Image.alpha_composite(bg, rgba)
-        img = img.convert("L")
+        if img.mode in ("RGBA", "LA", "PA", "P") or "transparency" in img.info:
+            img = img.convert("RGBA").convert("LA")
+            if img.getchannel("A").getextrema()[0] == 255:
+                img = img.convert("L")  # alpha channel present but fully opaque
+        else:
+            img = img.convert("L")
         if max(img.size) > MAX_STORED_PX:
             k = MAX_STORED_PX / max(img.size)
             if dpi:
@@ -69,7 +71,8 @@ class ImageStore:
             raise ImageError(f"Image {image_id} is missing; re-import it")
         img = Image.open(p)
         img.load()
-        return img.convert("L")
+        return img.convert("LA") if img.mode in ("LA", "RGBA", "PA", "P") or "transparency" in img.info \
+            else img.convert("L")
 
 
 def process(img, obj: dict, layer: dict):
@@ -91,7 +94,15 @@ def process(img, obj: dict, layer: dict):
     if pw * ph > MAX_RASTER_PX:
         raise ImageError("Image is too large at this line interval; make it smaller or raise the interval")
 
-    img = img.resize((pw, ph), Image.LANCZOS if pw * ph < img.width * img.height else Image.BICUBIC)
+    resample = Image.LANCZOS if pw * ph < img.width * img.height else Image.BICUBIC
+    alpha = None
+    if img.mode == "LA":
+        a_full = img.getchannel("A")
+        # Fully transparent pixels often hold black; make them white first so
+        # resampling doesn't pull dark fringes into the edges.
+        img = Image.composite(img.getchannel("L"), Image.new("L", img.size, 255), a_full)
+        alpha = a_full.resize((pw, ph), resample)
+    img = img.resize((pw, ph), resample)
     brightness = float(obj.get("brightness", 0) or 0)
     contrast = float(obj.get("contrast", 0) or 0)
     if brightness:
@@ -100,6 +111,10 @@ def process(img, obj: dict, layer: dict):
         img = ImageEnhance.Contrast(img).enhance(1 + contrast / 100)
     if obj.get("invert"):
         img = ImageOps.invert(img)
+    if alpha is not None:
+        # Transparent areas never burn, whatever brightness/contrast/invert did:
+        # blend toward white by (1 - alpha).
+        img = Image.composite(img, Image.new("L", img.size, 255), alpha)
 
     rot = float(obj.get("rot", 0) or 0)
     if rot:
